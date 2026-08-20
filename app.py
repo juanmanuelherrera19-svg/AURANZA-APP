@@ -6,10 +6,10 @@ from datetime import datetime
 # ==========================================
 # CONFIGURACIÓN E INICIALIZACIÓN DE BD
 # ==========================================
-st.set_page_config(page_title="GH Fragancias - Sistema ERP/MRP", layout="wide", page_icon="🧪")
+st.set_page_config(page_title="AURANZA SAS - ERP/MRP System", layout="wide", page_icon="🧪")
 
 def get_connection():
-    conn = sqlite3.connect("gh_inventario.db", check_same_thread=False)
+    conn = sqlite3.connect("auranza_inventario.db", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -26,9 +26,9 @@ def init_db():
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS productos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        codigo_gh TEXT UNIQUE NOT NULL,
+        codigo_au TEXT UNIQUE NOT NULL,
         codigo_proveedor TEXT NOT NULL,
-        nombre_gh TEXT NOT NULL,
+        nombre_au TEXT NOT NULL,
         nombre_proveedor TEXT NOT NULL,
         proveedor TEXT NOT NULL,
         categoria TEXT NOT NULL,
@@ -172,7 +172,7 @@ def registrar_recepcion(producto_id, cantidad, lote_prov, fab_date, exp_date, co
 # ==========================================
 # INTERFAZ Y NAVEGACIÓN
 # ==========================================
-st.sidebar.title("🧪 GH FRAGANCIAS ERP")
+st.sidebar.title("🧪 AURANZA SAS ERP")
 st.sidebar.markdown("---")
 rol = st.sidebar.selectbox("👤 Perfil de Usuario:", ["Administrador", "Bodega", "Comercial"])
 
@@ -189,7 +189,7 @@ conn = get_connection()
 
 if menu == "📊 Ficha de Producto":
     st.title("📊 Consulta General de Producto / Inventario")
-    busqueda = st.text_input("🔍 Buscar por Código GH, Código Proveedor o Nombre:")
+    busqueda = st.text_input("🔍 Buscar por Código AU, Código Proveedor o Nombre:")
     
     query = """
     SELECT p.*, b.nombre as nombre_bodega 
@@ -200,14 +200,14 @@ if menu == "📊 Ficha de Producto":
     
     if busqueda:
         df_prods = df_prods[
-            df_prods['codigo_gh'].str.contains(busqueda, case=False, na=False) |
+            df_prods['codigo_au'].str.contains(busqueda, case=False, na=False) |
             df_prods['codigo_proveedor'].str.contains(busqueda, case=False, na=False) |
-            df_prods['nombre_gh'].str.contains(busqueda, case=False, na=False)
+            df_prods['nombre_au'].str.contains(busqueda, case=False, na=False)
         ]
         
     if not df_prods.empty:
         prod_sel_id = st.selectbox("Seleccione un producto del resultado:", df_prods['id'].tolist(), 
-                                 format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_gh'].values[0]} | {df_prods[df_prods['id']==x]['nombre_gh'].values[0]} (Prov: {df_prods[df_prods['id']==x]['codigo_proveedor'].values[0]})")
+                                 format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_au'].values[0]} | {df_prods[df_prods['id']==x]['nombre_au'].values[0]} (Prov: {df_prods[df_prods['id']==x]['codigo_proveedor'].values[0]})")
         
         p = df_prods[df_prods['id'] == prod_sel_id].iloc[0]
         existencia_total = obtener_existencia_producto(prod_sel_id)
@@ -233,11 +233,11 @@ if menu == "📊 Ficha de Producto":
         st.markdown(f"""
         <div style="background-color:#000080; color:#FFFFFF; font-family:monospace; padding:15px; border-radius:5px;">
         -----------------------------------------------------------------------------------------------------<br>
-        | Item &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{p['codigo_gh']}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>{p['nombre_gh'].upper()}</b><br>
+        | Item &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{p['codigo_au']}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>{p['nombre_au'].upper()}</b><br>
         | Cód Proveedor: <b>{p['codigo_proveedor']}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; PROVEEDOR: <b>{p['proveedor'].upper()}</b><br>
         | Localizacion : <b>{p['nombre_bodega'].upper()}</b><br>
         -----------------------------------------------------------------------------------------------------<br>
-        | U.M: <b>{p['unidad_medida']}</b> Clasif.: <b>{p['categoria']} / {p['linea']}</b> &nbsp;|&nbsp; Acumulados Desde &nbsp;&nbsp;&nbsp;&nbsp;: GH-SYSTEM-2026<br>
+        | U.M: <b>{p['unidad_medida']}</b> Clasif.: <b>{p['categoria']} / {p['linea']}</b> &nbsp;|&nbsp; Acumulados Desde &nbsp;&nbsp;&nbsp;&nbsp;: AURANZA-2026<br>
         +-----------------------------------------------+ Total Entradas &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {tot_entradas:,.3f}<br>
         | Existencia Actual : <b>{existencia_total:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Total Salidas &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {tot_salidas:,.3f}<br>
         | Comp. en O.C. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{comp_oc:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+------------------------------------+<br>
@@ -259,11 +259,11 @@ elif menu == "📦 Maestro de Productos y Lotes":
         st.warning("⚠️ Su rol solo le permite consultar la información.")
     else:
         with st.form("crear_producto"):
-            st.subheader("Formulario de Creación de Producto GH")
+            st.subheader("Formulario de Creación de Producto AURANZA")
             c1, c2, c3 = st.columns(3)
-            codigo_gh = c1.text_input("Código GH Interno (ej: AIH0001):")
+            codigo_au = c1.text_input("Código AU Interno (ej: AUH0001):")
             codigo_prov = c2.text_input("Código Proveedor (ej: XB0102):")
-            nombre_gh = c3.text_input("Nombre GH (ej: BAMBU):")
+            nombre_au = c3.text_input("Nombre AU (ej: BAMBU):")
             
             c4, c5, c6 = st.columns(3)
             nombre_prov = c4.text_input("Nombre en Proveedor (ej: BAMBOO):")
@@ -280,16 +280,16 @@ elif menu == "📦 Maestro de Productos y Lotes":
                 try:
                     c = conn.cursor()
                     c.execute("""
-                        INSERT INTO productos (codigo_gh, codigo_proveedor, nombre_gh, nombre_proveedor, proveedor, categoria, linea, bodega_id, precio_venta)
+                        INSERT INTO productos (codigo_au, codigo_proveedor, nombre_au, nombre_proveedor, proveedor, categoria, linea, bodega_id, precio_venta)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (codigo_gh, codigo_prov, nombre_gh, nombre_prov, proveedor, categoria, linea, bodega_id, precio_vta))
+                    """, (codigo_au, codigo_prov, nombre_au, nombre_prov, proveedor, categoria, linea, bodega_id, precio_vta))
                     conn.commit()
-                    st.success(f"✅ Producto {codigo_gh} - {nombre_gh} creado exitosamente!")
+                    st.success(f"✅ Producto {codigo_au} - {nombre_au} creado exitosamente!")
                 except Exception as e:
                     st.error(f"Error al crear producto: {e}")
 
     st.subheader("Inventario Consolidado por Productos")
-    df_prods_all = pd.read_sql_query("SELECT p.codigo_gh, p.codigo_proveedor, p.nombre_gh, p.proveedor, b.nombre as bodega, p.costo_promedio, p.precio_venta FROM productos p JOIN bodegas b ON p.bodega_id = b.id", conn)
+    df_prods_all = pd.read_sql_query("SELECT p.codigo_au, p.codigo_proveedor, p.nombre_au, p.proveedor, b.nombre as bodega, p.costo_promedio, p.precio_venta FROM productos p JOIN bodegas b ON p.bodega_id = b.id", conn)
     st.dataframe(df_prods_all, use_container_width=True)
 
 elif menu == "📑 Órdenes de Compra y Recepción":
@@ -299,16 +299,16 @@ elif menu == "📑 Órdenes de Compra y Recepción":
     
     with tab1:
         st.subheader("Generar Nueva Orden de Compra")
-        df_prods = pd.read_sql_query("SELECT id, codigo_gh, codigo_proveedor, nombre_gh, nombre_proveedor, proveedor FROM productos", conn)
+        df_prods = pd.read_sql_query("SELECT id, codigo_au, codigo_proveedor, nombre_au, nombre_proveedor, proveedor FROM productos", conn)
         
         if not df_prods.empty:
             num_oc = st.text_input("Número de OC (ej: OC-0001):")
-            prod_oc_id = st.selectbox("Seleccionar Producto:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['nombre_gh'].values[0]} | Proveedor: {df_prods[df_prods['id']==x]['proveedor'].values[0]}")
+            prod_oc_id = st.selectbox("Seleccionar Producto:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['nombre_au'].values[0]} | Proveedor: {df_prods[df_prods['id']==x]['proveedor'].values[0]}")
             cant_oc = st.number_input("Cantidad a Solicitar (KG):", min_value=0.1)
             costo_oc = st.number_input("Costo Pactado / Factura Proveedor ($):", min_value=0.0)
             
             prod_info = df_prods[df_prods['id']==prod_oc_id].iloc[0]
-            st.info(f"📋 **Vista para Proveedor:** {prod_info['codigo_proveedor']} - {prod_info['nombre_proveedor']} | **Interno GH:** {prod_info['codigo_gh']} - {prod_info['nombre_gh']}")
+            st.info(f"📋 **Vista para Proveedor:** {prod_info['codigo_proveedor']} - {prod_info['nombre_proveedor']} | **Interno AU:** {prod_info['codigo_au']} - {prod_info['nombre_au']}")
             
             if st.button("Emitir Orden de Compra"):
                 c = conn.cursor()
@@ -348,20 +348,20 @@ elif menu == "🧪 Kits y Ensambles":
     st.title("🧪 Creación y Ensamble de Kits")
     
     st.subheader("Fórmulas de Ensamble")
-    df_prods = pd.read_sql_query("SELECT id, codigo_gh, nombre_gh, costo_promedio FROM productos", conn)
+    df_prods = pd.read_sql_query("SELECT id, codigo_au, nombre_au, costo_promedio FROM productos", conn)
     
     with st.expander("➕ Crear Nueva Fórmula de Kit"):
         cod_kit = st.text_input("Código del Kit / Producto Final (ej: AU0010):")
         nom_kit = st.text_input("Nombre Comercial Kit (ej: FRAGANCIA BAMBU 1KG):")
         
         st.write("Seleccione Componentes Químicos (Proporción para 1 KG):")
-        comp1 = st.selectbox("Componente 1:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_gh'].values[0]} - {df_prods[df_prods['id']==x]['nombre_gh'].values[0]}")
+        comp1 = st.selectbox("Componente 1:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_au'].values[0]} - {df_prods[df_prods['id']==x]['nombre_au'].values[0]}")
         prop1 = st.number_input("Cantidad Componente 1 (KG):", value=0.6)
         
-        comp2 = st.selectbox("Componente 2:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_gh'].values[0]} - {df_prods[df_prods['id']==x]['nombre_gh'].values[0]}")
+        comp2 = st.selectbox("Componente 2:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_au'].values[0]} - {df_prods[df_prods['id']==x]['nombre_au'].values[0]}")
         prop2 = st.number_input("Cantidad Componente 2 (KG):", value=0.3)
 
-        comp3 = st.selectbox("Componente 3:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_gh'].values[0]} - {df_prods[df_prods['id']==x]['nombre_gh'].values[0]}")
+        comp3 = st.selectbox("Componente 3:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_au'].values[0]} - {df_prods[df_prods['id']==x]['nombre_au'].values[0]}")
         prop3 = st.number_input("Cantidad Componente 3 (KG):", value=0.1)
 
         if st.button("Guardar Fórmula Kit"):
@@ -385,7 +385,7 @@ elif menu == "🚨 Requerimiento Comercial (MRP)":
         if st.button("🔍 Evaluar Disponibilidad de Inventario y Empaques"):
             st.subheader("1. Análisis de Materias Primas")
             df_comps = pd.read_sql_query("""
-                SELECT kc.componente_id, p.codigo_gh, p.nombre_gh, kc.porcentaje_o_cantidad, p.costo_promedio
+                SELECT kc.componente_id, p.codigo_au, p.nombre_au, kc.porcentaje_o_cantidad, p.costo_promedio
                 FROM kit_componentes kc
                 JOIN productos p ON kc.componente_id = p.id
                 WHERE kc.kit_id = ?
@@ -400,10 +400,10 @@ elif menu == "🚨 Requerimiento Comercial (MRP)":
                 costo_mezcla_total += costo_comp
                 
                 if disponible >= necesario:
-                    st.success(f"🟢 **{row['nombre_gh']} ({row['codigo_gh']})**: Requerido: {necesario:.2f} KG | Disponible: {disponible:.2f} KG")
+                    st.success(f"🟢 **{row['nombre_au']} ({row['codigo_au']})**: Requerido: {necesario:.2f} KG | Disponible: {disponible:.2f} KG")
                 else:
                     faltante_cant = necesario - disponible
-                    st.error(f"🔴 **{row['nombre_gh']} ({row['codigo_gh']})**: Requerido: {necesario:.2f} KG | Disponible: {disponible:.2f} KG | **FALTAN: {faltante_cant:.2f} KG**")
+                    st.error(f"🔴 **{row['nombre_au']} ({row['codigo_au']})**: Requerido: {necesario:.2f} KG | Disponible: {disponible:.2f} KG | **FALTAN: {faltante_cant:.2f} KG**")
             
             st.subheader("2. Regla Automática de Empaques (Bodega 4)")
             if cant_solicitada <= 2:
@@ -422,7 +422,7 @@ elif menu == "🚨 Requerimiento Comercial (MRP)":
 elif menu == "📜 Kardex e Historial":
     st.title("📜 Trazabilidad Completa / Kardex")
     df_kardex = pd.read_sql_query("""
-        SELECT k.fecha, p.codigo_gh, p.nombre_gh, b.nombre as bodega, k.tipo_movimiento, k.cantidad, k.costo_unitario, k.usuario, k.motivo, k.lote
+        SELECT k.fecha, p.codigo_au, p.nombre_au, b.nombre as bodega, k.tipo_movimiento, k.cantidad, k.costo_unitario, k.usuario, k.motivo, k.lote
         FROM kardex k
         JOIN productos p ON k.producto_id = p.id
         JOIN bodegas b ON k.bodega_id = b.id
