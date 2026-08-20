@@ -121,7 +121,7 @@ def init_db():
         FOREIGN KEY (bodega_id) REFERENCES bodegas(id)
     )""")
 
-    # MIGRACIONES SEGURAS EN CASO DE TABLAS VIEJAS
+    # MIGRACIONES SEGURAS
     try:
         cursor.execute("ALTER TABLE ordenes_compra_items ADD COLUMN moneda TEXT DEFAULT 'COP'")
     except sqlite3.OperationalError:
@@ -232,9 +232,12 @@ if menu == "📊 Ficha de Producto":
     FROM productos p 
     JOIN bodegas b ON p.bodega_id = b.id
     """
-    df_prods = pd.read_sql_query(query, conn)
+    try:
+        df_prods = pd.read_sql_query(query, conn)
+    except Exception:
+        df_prods = pd.DataFrame()
     
-    if busqueda:
+    if busqueda and not df_prods.empty:
         df_prods = df_prods[
             df_prods['codigo_au'].str.contains(busqueda, case=False, na=False) |
             df_prods['codigo_proveedor'].str.contains(busqueda, case=False, na=False) |
@@ -285,6 +288,8 @@ if menu == "📊 Ficha de Producto":
         st.subheader("📦 Trazabilidad por Lotes Activos")
         df_lotes = pd.read_sql_query("SELECT lote_proveedor, cantidad_actual, fecha_fabricacion, fecha_vencimiento, costo_unitario, remision_factura, observaciones FROM lotes WHERE producto_id = ? AND cantidad_actual > 0", conn, params=(prod_sel_id,))
         st.dataframe(df_lotes, use_container_width=True)
+    else:
+        st.warning("⚠️ No se encontraron productos en el sistema. Primero cree productos en el menú 'Maestro de Productos y Lotes'.")
 
 elif menu == "📦 Maestro de Productos y Lotes":
     st.title("📦 Crear y Administrar Productos")
@@ -328,8 +333,11 @@ elif menu == "📦 Maestro de Productos y Lotes":
                     st.error(f"Error al crear producto: {e}")
 
     st.subheader("Inventario Consolidado por Productos")
-    df_prods_all = pd.read_sql_query("SELECT p.codigo_au, p.codigo_proveedor, p.nombre_au, p.proveedor, b.nombre as bodega, p.costo_promedio, p.ultimo_costo, p.precio_venta FROM productos p JOIN bodegas b ON p.bodega_id = b.id", conn)
-    st.dataframe(df_prods_all, use_container_width=True)
+    try:
+        df_prods_all = pd.read_sql_query("SELECT p.codigo_au, p.codigo_proveedor, p.nombre_au, p.proveedor, b.nombre as bodega, p.costo_promedio, p.ultimo_costo, p.precio_venta FROM productos p JOIN bodegas b ON p.bodega_id = b.id", conn)
+        st.dataframe(df_prods_all, use_container_width=True)
+    except Exception:
+        st.info("Aún no hay productos registrados.")
 
 elif menu == "📑 Órdenes de Compra y Recepción":
     st.title("📑 Gestión de Compras y Recepciones")
@@ -338,9 +346,14 @@ elif menu == "📑 Órdenes de Compra y Recepción":
     
     with tab1:
         st.subheader("Generar Nueva Orden de Compra")
-        df_prods = pd.read_sql_query("SELECT id, codigo_au, codigo_proveedor, nombre_au, nombre_proveedor, proveedor FROM productos", conn)
+        try:
+            df_prods = pd.read_sql_query("SELECT id, codigo_au, codigo_proveedor, nombre_au, nombre_proveedor, proveedor FROM productos", conn)
+        except Exception:
+            df_prods = pd.DataFrame()
         
-        if not df_prods.empty:
+        if df_prods.empty:
+            st.warning("⚠️ Para generar una Orden de Compra primero debe registrar productos en el módulo '📦 Maestro de Productos y Lotes'.")
+        else:
             num_oc = st.text_input("Número de OC (ej: OC-0001):")
             prod_oc_id = st.selectbox("Seleccionar Producto:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['nombre_au'].values[0]} | Proveedor: {df_prods[df_prods['id']==x]['proveedor'].values[0]}")
             
@@ -366,7 +379,10 @@ elif menu == "📑 Órdenes de Compra y Recepción":
 
     with tab2:
         st.subheader("Entrada de Mercancía a Bodega (Recepción)")
-        df_ocs = pd.read_sql_query("SELECT oc.id, oc.numero_oc, oc.proveedor, i.producto_id, i.cantidad_solicitada, i.costo_pactado, i.moneda, i.trm FROM ordenes_compra oc JOIN ordenes_compra_items i ON oc.id = i.oc_id WHERE oc.estado = 'ABIERTA'", conn)
+        try:
+            df_ocs = pd.read_sql_query("SELECT oc.id, oc.numero_oc, oc.proveedor, i.producto_id, i.cantidad_solicitada, i.costo_pactado, i.moneda, i.trm FROM ordenes_compra oc JOIN ordenes_compra_items i ON oc.id = i.oc_id WHERE oc.estado = 'ABIERTA'", conn)
+        except Exception:
+            df_ocs = pd.DataFrame()
         
         if df_ocs.empty:
             st.info("No hay Órdenes de Compra abiertas pendientes por recibir.")
@@ -409,50 +425,65 @@ elif menu == "🧪 Kits y Ensambles":
     st.title("🧪 Creación y Ensamble de Kits")
     
     st.subheader("Fórmulas de Ensamble y Costo Teórico Actualizado")
-    df_prods = pd.read_sql_query("SELECT id, codigo_au, nombre_au, costo_promedio FROM productos", conn)
+    try:
+        df_prods = pd.read_sql_query("SELECT id, codigo_au, nombre_au, costo_promedio FROM productos", conn)
+    except Exception:
+        df_prods = pd.DataFrame()
     
-    with st.expander("➕ Crear / Configurar Fórmula de Kit"):
-        cod_kit = st.text_input("Código del Kit / Producto Final (ej: AU0010):")
-        nom_kit = st.text_input("Nombre Comercial Kit (ej: FRAGANCIA BAMBU 1KG):")
-        
-        st.write("Seleccione Componentes Químicos (Base para 1 KG):")
-        comp1 = st.selectbox("Componente 1:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_au'].values[0]} - {df_prods[df_prods['id']==x]['nombre_au'].values[0]}")
-        prop1 = st.number_input("Cantidad Componente 1 (KG):", value=0.6)
-        
-        comp2 = st.selectbox("Componente 2:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_au'].values[0]} - {df_prods[df_prods['id']==x]['nombre_au'].values[0]}")
-        prop2 = st.number_input("Cantidad Componente 2 (KG):", value=0.3)
+    if df_prods.empty:
+        st.warning("⚠️ Debe registrar productos en 'Maestro de Productos y Lotes' para poder armar fórmulas de Kits.")
+    else:
+        with st.expander("➕ Crear / Configurar Fórmula de Kit"):
+            cod_kit = st.text_input("Código del Kit / Producto Final (ej: AU0010):")
+            nom_kit = st.text_input("Nombre Comercial Kit (ej: FRAGANCIA BAMBU 1KG):")
+            
+            st.write("Seleccione Componentes Químicos (Base para 1 KG):")
+            comp1 = st.selectbox("Componente 1:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_au'].values[0]} - {df_prods[df_prods['id']==x]['nombre_au'].values[0]}")
+            prop1 = st.number_input("Cantidad Componente 1 (KG):", value=0.6)
+            
+            comp2 = st.selectbox("Componente 2:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_au'].values[0]} - {df_prods[df_prods['id']==x]['nombre_au'].values[0]}")
+            prop2 = st.number_input("Cantidad Componente 2 (KG):", value=0.3)
 
-        comp3 = st.selectbox("Componente 3:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_au'].values[0]} - {df_prods[df_prods['id']==x]['nombre_au'].values[0]}")
-        prop3 = st.number_input("Cantidad Componente 3 (KG):", value=0.1)
+            comp3 = st.selectbox("Componente 3:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_au'].values[0]} - {df_prods[df_prods['id']==x]['nombre_au'].values[0]}")
+            prop3 = st.number_input("Cantidad Componente 3 (KG):", value=0.1)
 
-        if st.button("Guardar Fórmula Kit"):
-            c = conn.cursor()
-            c.execute("INSERT INTO kits (codigo_kit, nombre_kit) VALUES (?, ?)", (cod_kit, nom_kit))
-            kit_id = c.lastrowid
-            c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (?, ?, ?)", (kit_id, comp1, prop1))
-            c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (?, ?, ?)", (kit_id, comp2, prop2))
-            c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (?, ?, ?)", (kit_id, comp3, prop3))
-            conn.commit()
-            st.success("✅ Fórmula de Kit guardada.")
+            if st.button("Guardar Fórmula Kit"):
+                c = conn.cursor()
+                c.execute("INSERT INTO kits (codigo_kit, nombre_kit) VALUES (?, ?)", (cod_kit, nom_kit))
+                kit_id = c.lastrowid
+                c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (?, ?, ?)", (kit_id, comp1, prop1))
+                c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (?, ?, ?)", (kit_id, comp2, prop2))
+                c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (?, ?, ?)", (kit_id, comp3, prop3))
+                conn.commit()
+                st.success("✅ Fórmula de Kit guardada.")
 
     st.subheader("Análisis de Costo y Margen Teórico por Kit")
-    df_kits_list = pd.read_sql_query("SELECT * FROM kits", conn)
-    for idx, k_item in df_kits_list.iterrows():
-        df_comp_k = pd.read_sql_query("""
-            SELECT kc.porcentaje_o_cantidad, p.costo_promedio, p.nombre_au
-            FROM kit_componentes kc
-            JOIN productos p ON kc.componente_id = p.id
-            WHERE kc.kit_id = ?
-        """, conn, params=(k_item['id'],))
-        
-        costo_mezcla_kg = sum(df_comp_k['porcentaje_o_cantidad'] * df_comp_k['costo_promedio'])
-        st.info(f"🧪 **{k_item['codigo_kit']} - {k_item['nombre_kit']}** | Costo Promedio Móvil Mezcla: **${costo_mezcla_kg:,.2f} COP / KG**")
+    try:
+        df_kits_list = pd.read_sql_query("SELECT * FROM kits", conn)
+        for idx, k_item in df_kits_list.iterrows():
+            df_comp_k = pd.read_sql_query("""
+                SELECT kc.porcentaje_o_cantidad, p.costo_promedio, p.nombre_au
+                FROM kit_componentes kc
+                JOIN productos p ON kc.componente_id = p.id
+                WHERE kc.kit_id = ?
+            """, conn, params=(k_item['id'],))
+            
+            costo_mezcla_kg = sum(df_comp_k['porcentaje_o_cantidad'] * df_comp_k['costo_promedio'])
+            st.info(f"🧪 **{k_item['codigo_kit']} - {k_item['nombre_kit']}** | Costo Promedio Móvil Mezcla: **${costo_mezcla_kg:,.2f} COP / KG**")
+    except Exception:
+        st.info("Aún no hay kits creados.")
 
 elif menu == "🚨 Requerimiento Comercial (MRP)":
     st.title("🚨 Motor MRP: Análisis de Materias Primas y Empaques")
     
-    df_kits = pd.read_sql_query("SELECT * FROM kits", conn)
-    if not df_kits.empty:
+    try:
+        df_kits = pd.read_sql_query("SELECT * FROM kits", conn)
+    except Exception:
+        df_kits = pd.DataFrame()
+
+    if df_kits.empty:
+        st.warning("⚠️ No existen Kits registrados para simular el MRP. Regístrelos en el módulo 'Kits y Ensambles'.")
+    else:
         kit_sel = st.selectbox("Seleccionar Kit a Comercializar:", df_kits['id'].tolist(), format_func=lambda x: f"{df_kits[df_kits['id']==x]['codigo_kit'].values[0]} - {df_kits[df_kits['id']==x]['nombre_kit'].values[0]}")
         cant_solicitada = st.number_input("Cantidad Requerida por Cliente (KG):", value=300.0)
         
@@ -498,13 +529,19 @@ elif menu == "🚨 Requerimiento Comercial (MRP)":
 
 elif menu == "📜 Kardex e Historial":
     st.title("📜 Trazabilidad Completa / Kardex Auditable")
-    df_kardex = pd.read_sql_query("""
-        SELECT k.fecha, p.codigo_au, p.nombre_au, b.nombre as bodega, k.tipo_movimiento, k.cantidad, k.costo_unitario, k.usuario, k.motivo, k.lote, k.documento_ref
-        FROM kardex k
-        JOIN productos p ON k.producto_id = p.id
-        JOIN bodegas b ON k.bodega_id = b.id
-        ORDER BY k.id DESC
-    """, conn)
-    st.dataframe(df_kardex, use_container_width=True)
+    try:
+        df_kardex = pd.read_sql_query("""
+            SELECT k.fecha, p.codigo_au, p.nombre_au, b.nombre as bodega, k.tipo_movimiento, k.cantidad, k.costo_unitario, k.usuario, k.motivo, k.lote, k.documento_ref
+            FROM kardex k
+            LEFT JOIN productos p ON k.producto_id = p.id
+            LEFT JOIN bodegas b ON k.bodega_id = b.id
+            ORDER BY k.id DESC
+        """, conn)
+        if df_kardex.empty:
+            st.info("Aún no hay movimientos registrados en el Kardex.")
+        else:
+            st.dataframe(df_kardex, use_container_width=True)
+    except Exception as e:
+        st.info("Aún no se han generado registros en el Kardex.")
 
 conn.close()
