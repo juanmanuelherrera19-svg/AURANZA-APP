@@ -121,6 +121,16 @@ def init_db():
         FOREIGN KEY (bodega_id) REFERENCES bodegas(id)
     )""")
 
+    # MIGRACIONES SEGURAS EN CASO DE TABLAS VIEJAS
+    try:
+        cursor.execute("ALTER TABLE ordenes_compra_items ADD COLUMN moneda TEXT DEFAULT 'COP'")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE ordenes_compra_items ADD COLUMN trm REAL DEFAULT 1.0")
+    except sqlite3.OperationalError:
+        pass
+
     bodegas = ["FINE", "INDUSTRIAL", "MATERIAS PRIMAS", "ENVASES Y DEMÁS"]
     for b in bodegas:
         cursor.execute("INSERT OR IGNORE INTO bodegas (nombre) VALUES (?)", (b,))
