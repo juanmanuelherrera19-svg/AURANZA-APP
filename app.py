@@ -105,6 +105,21 @@ def init_db():
         FOREIGN KEY (producto_id) REFERENCES productos(id)
     )""")
 
+    # TABLA DE PEDIDOS DE VENTA
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS pedidos_venta (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        numero_pedido TEXT UNIQUE NOT NULL,
+        cliente TEXT NOT NULL,
+        producto_id INTEGER NOT NULL,
+        cantidad_solicitada REAL NOT NULL,
+        precio_unitario REAL NOT NULL,
+        vendedor TEXT NOT NULL,
+        fecha_pedido TEXT NOT NULL,
+        estado TEXT DEFAULT 'PENDIENTE',
+        FOREIGN KEY (producto_id) REFERENCES productos(id)
+    )""")
+
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS kits (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -237,6 +252,67 @@ def registrar_recepcion(producto_id, cantidad, lote_prov, fab_date, exp_date, co
     conn.commit()
     conn.close()
 
+def registrar_pedido_venta(num_ped, cliente, producto_id, cantidad, precio, vendedor):
+    conn = get_connection()
+    c = conn.cursor()
+    
+    fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute("""
+        INSERT INTO pedidos_venta (numero_pedido, cliente, producto_id, cantidad_solicitada, precio_unitario, vendedor, fecha_pedido, estado)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDIENTE')
+    """, (num_ped, cliente, producto_id, cantidad, precio, vendedor, fecha_hoy))
+    
+    c.execute("UPDATE productos SET comp_venta = comp_venta + ? WHERE id = ?", (cantidad, producto_id))
+    conn.commit()
+    conn.close()
+
+def despachar_pedido_venta(pedido_id, usuario_despacha):
+    conn = get_connection()
+    c = conn.cursor()
+    
+    c.execute("SELECT * FROM pedidos_venta WHERE id = ?", (pedido_id,))
+    ped = c.fetchone()
+    if not ped or ped['estado'] != 'PENDIENTE':
+        conn.close()
+        return False, "El pedido ya fue procesado o no existe."
+    
+    producto_id = ped['producto_id']
+    cant_requerida = ped['cantidad_solicitada']
+    fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    c.execute("SELECT * FROM productos WHERE id = ?", (producto_id,))
+    prod = c.fetchone()
+    
+    c.execute("SELECT * FROM lotes WHERE producto_id = ? AND cantidad_actual > 0 ORDER BY id ASC", (producto_id,))
+    lotes = c.fetchall()
+    
+    cant_descontada = 0.0
+    for l in lotes:
+        if cant_descontada >= cant_requerida:
+            break
+        
+        faltante = cant_requerida - cant_descontada
+        if l['cantidad_actual'] <= faltante:
+            tomar = l['cantidad_actual']
+            c.execute("UPDATE lotes SET cantidad_actual = 0 WHERE id = ?", (l['id'],))
+        else:
+            tomar = faltante
+            c.execute("UPDATE lotes SET cantidad_actual = cantidad_actual - ? WHERE id = ?", (tomar, l['id']))
+            
+        cant_descontada += tomar
+        
+        c.execute("""
+            INSERT INTO kardex (fecha, producto_id, bodega_id, tipo_movimiento, cantidad, costo_unitario, usuario, motivo, lote, documento_ref)
+            VALUES (?, ?, ?, 'SALIDA', ?, ?, ?, ?, ?, ?)
+        """, (fecha_hoy, producto_id, prod['bodega_id'], tomar, prod['costo_promedio'], usuario_despacha, f"Despacho Pedido {ped['numero_pedido']} - Cliente: {ped['cliente']}", l['lote_proveedor'], ped['numero_pedido']))
+
+    c.execute("UPDATE productos SET comp_venta = MAX(0.0, comp_venta - ?) WHERE id = ?", (cant_requerida, producto_id))
+    c.execute("UPDATE pedidos_venta SET estado = 'DESPACHADO' WHERE id = ?", (pedido_id,))
+    
+    conn.commit()
+    conn.close()
+    return True, "Despacho realizado con éxito."
+
 # ==========================================
 # CONTROL DE SESIÓN Y LOGIN
 # ==========================================
@@ -279,6 +355,7 @@ else:
 
     menu = st.sidebar.radio("Navegación Módulos:", [
         "📊 Ficha de Producto",
+        "🛒 Pedidos de Venta",
         "📦 Maestro de Productos y Lotes",
         "📑 Órdenes de Compra y Recepción",
         "🧪 Kits y Ensambles",
@@ -289,6 +366,16 @@ else:
 
     conn = get_connection()
     rol = st.session_state['rol']
+
+    # BANNER GENERAL DE NOTIFICACIONES
+    try:
+        df_p_pend = pd.read_sql_query("SELECT p.numero_pedido, p.cliente, pr.nombre_au, p.cantidad_solicitada, p.vendedor FROM pedidos_venta p JOIN productos pr ON p.producto_id = pr.id WHERE p.estado = 'PENDIENTE'", conn)
+        if not df_p_pend.empty:
+            st.warning(f"🚨 **NOTIFICACIÓN GLOBAL:** Hay **{len(df_p_pend)} Pedido(s) de Venta PENDIENTE(S)** por despachar / facturar.")
+            with st.expander("Ver lista de pedidos pendientes por despachar"):
+                st.dataframe(df_p_pend, use_container_width=True)
+    except Exception:
+        pass
 
     if menu == "📊 Ficha de Producto":
         st.title("📊 Consulta General de Producto / Inventario")
@@ -353,6 +440,88 @@ else:
             st.dataframe(df_lotes, use_container_width=True)
         else:
             st.warning("⚠️ No se encontraron productos registrados.")
+
+    elif menu == "🛒 Pedidos de Venta":
+        st.title("🛒 Módulo de Pedidos de Venta y Despachos")
+        
+        tab_vta1, tab_vta2 = st.tabs(["➕ Montar Nuevo Pedido de Venta", "🚚 Control de Despachos y Facturación"])
+        
+        with tab_vta1:
+            st.subheader("Registrar Orden de Pedido Comercial")
+            if rol not in ["Administrador", "Comercial"]:
+                st.warning("⚠️ Perfil sin autorización para montar pedidos de venta.")
+            else:
+                try:
+                    df_prods_vta = pd.read_sql_query("SELECT id, codigo_au, nombre_au, precio_venta FROM productos", conn)
+                except Exception:
+                    df_prods_vta = pd.DataFrame()
+                
+                if df_prods_vta.empty:
+                    st.warning("⚠️ No hay productos registrados para vender.")
+                else:
+                    with st.form("form_nuevo_pedido"):
+                        c_p1, c_p2 = st.columns(2)
+                        num_ped = c_p1.text_input("Número / Código de Pedido (ej: PED-001):")
+                        cliente = c_p2.text_input("Nombre del Cliente:")
+                        
+                        prod_ped_id = st.selectbox("Producto / Ensamble a Vender:", df_prods_vta['id'].tolist(), format_func=lambda x: f"{df_prods_vta[df_prods_vta['id']==x]['codigo_au'].values[0]} - {df_prods_vta[df_prods_vta['id']==x]['nombre_au'].values[0]}")
+                        
+                        p_sel_info = df_prods_vta[df_prods_vta['id']==prod_ped_id].iloc[0]
+                        stock_disp = obtener_existencia_producto(prod_ped_id)
+                        
+                        c_p3, c_p4 = st.columns(2)
+                        cant_ped = c_p3.number_input("Cantidad Requerida (KG/Unidades):", min_value=0.1, value=10.0)
+                        precio_ped = c_p4.number_input("Precio de Venta Unitario ($ COP):", value=float(p_sel_info['precio_venta']))
+                        
+                        st.info(f"📊 **Stock Físico Actual:** {stock_disp:,.2f} KG | **Valor Total Venta:** ${cant_ped * precio_ped:,.2f} COP")
+                        
+                        if st.form_submit_button("Guardar y Comprometer Inventario"):
+                            if not num_ped or not cliente:
+                                st.error("❌ Indique el número de pedido y el cliente.")
+                            else:
+                                try:
+                                    registrar_pedido_venta(num_ped, cliente, prod_ped_id, cant_ped, precio_ped, st.session_state['username'])
+                                    st.success(f"✅ Pedido {num_ped} registrado. Se sumó {cant_ped} KG a Comprometido en Venta.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error al registrar pedido: {e}")
+
+        with tab_vta2:
+            st.subheader("Despacho e Impacto en Inventario / Kardex")
+            try:
+                df_pedidos = pd.read_sql_query("""
+                    SELECT p.id, p.numero_pedido, p.cliente, pr.codigo_au, pr.nombre_au, p.cantidad_solicitada, p.precio_unitario, p.vendedor, p.fecha_pedido, p.estado
+                    FROM pedidos_venta p
+                    JOIN productos pr ON p.producto_id = pr.id
+                    ORDER BY p.id DESC
+                """, conn)
+                
+                if df_pedidos.empty:
+                    st.info("No hay pedidos de venta registrados.")
+                else:
+                    st.dataframe(df_pedidos, use_container_width=True)
+                    
+                    st.markdown("---")
+                    st.subheader("Executar Despacho Físico (Bodega / Admin)")
+                    pedidos_pendientes = df_pedidos[df_pedidos['estado'] == 'PENDIENTE']
+                    
+                    if pedidos_pendientes.empty:
+                        st.success("✨ Todos los pedidos están despachados al día.")
+                    else:
+                        ped_to_desp = st.selectbox("Seleccionar Pedido Pendiente por Despachar:", pedidos_pendientes['id'].tolist(), format_func=lambda x: f"Pedido {pedidos_pendientes[pedidos_pendientes['id']==x]['numero_pedido'].values[0]} - Cliente: {pedidos_pendientes[pedidos_pendientes['id']==x]['cliente'].values[0]} ({pedidos_pendientes[pedidos_pendientes['id']==x]['cantidad_solicitada'].values[0]} KG)")
+                        
+                        if st.button("🚀 Confirmar Despacho Físico y Facturar"):
+                            if rol not in ["Administrador", "Bodega"]:
+                                st.error("❌ Solo los roles Bodega o Administrador pueden despachar pedidos.")
+                            else:
+                                ok, msg = despachar_pedido_venta(ped_to_desp, st.session_state['username'])
+                                if ok:
+                                    st.success(f"✅ {msg}")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ {msg}")
+            except Exception:
+                st.info("Aún no hay módulo de pedidos activo.")
 
     elif menu == "📦 Maestro de Productos y Lotes":
         st.title("📦 Crear y Administrar Productos")
