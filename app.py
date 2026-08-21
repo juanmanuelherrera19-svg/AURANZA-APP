@@ -219,7 +219,7 @@ def calcular_costo_promedio_movil(existencia_actual, costo_prom_actual, cant_nue
     return ((existencia_actual * costo_prom_actual) + (cant_nueva * costo_nuevo_cop)) / (existencia_actual + cant_nueva)
 
 # OPTIMIZACIÓN: Caché de lectura para existencia
-@st.cache_data(ttl=60)
+@st.cache_data
 def obtener_existencia_producto(producto_id):
     conn = get_connection()
     c = conn.cursor()
@@ -228,7 +228,7 @@ def obtener_existencia_producto(producto_id):
     return float(res) if res else 0.0
 
 # OPTIMIZACIÓN: Caché de lectura para OC pendientes
-@st.cache_data(ttl=60)
+@st.cache_data
 def obtener_oc_pendientes(producto_id):
     conn = get_connection()
     c = conn.cursor()
@@ -406,9 +406,9 @@ def generar_pdf_orden_compra(num_oc, proveedor, items_df):
     return buffer
 
 # ==========================================
-# FUNCIONES AUXILIARES CON CACHÉ DE DATOS
+# FUNCIONES AUXILIARES CON CACHÉ DE DATOS (MÁXIMA VELOCIDAD)
 # ==========================================
-@st.cache_data(ttl=60)
+@st.cache_data
 def cargar_tabla_sql(query):
     conn = get_connection()
     return pd.read_sql_query(query, conn)
@@ -473,7 +473,7 @@ else:
     conn = get_connection()
     rol = st.session_state['rol']
 
-    @st.cache_data(ttl=60)
+    @st.cache_data
     def obtener_notificacion_pedidos():
         q_pend = """
             SELECT p.numero_pedido, p.cliente, pr.nombre_au, p.cantidad_solicitada, p.vendedor 
