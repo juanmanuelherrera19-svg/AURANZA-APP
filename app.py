@@ -473,8 +473,18 @@ else:
     conn = get_connection()
     rol = st.session_state['rol']
 
+    @st.cache_data(ttl=60)
+    def obtener_notificacion_pedidos():
+        q_pend = """
+            SELECT p.numero_pedido, p.cliente, pr.nombre_au, p.cantidad_solicitada, p.vendedor 
+            FROM pedidos_venta p 
+            JOIN productos pr ON p.producto_id = pr.id 
+            WHERE p.estado = 'PENDIENTE'
+        """
+        return cargar_tabla_sql(q_pend)
+
     try:
-        df_p_pend = cargar_tabla_sql("SELECT p.numero_pedido, p.cliente, pr.nombre_au, p.cantidad_solicitada, p.vendedor FROM pedidos_venta p JOIN productos pr ON p.producto_id = pr.id WHERE p.estado = 'PENDIENTE'")
+        df_p_pend = obtener_notificacion_pedidos()
         if not df_p_pend.empty:
             st.warning(f"🚨 **NOTIFICACIÓN GLOBAL:** Hay **{len(df_p_pend)} Pedido(s) de Venta PENDIENTE(S)** por despachar / facturar.")
             with st.expander("Ver lista de pedidos pendientes por despachar"):
