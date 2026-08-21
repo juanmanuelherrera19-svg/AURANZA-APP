@@ -451,7 +451,7 @@ else:
         sub_vta = st.radio("Acción a realizar:", ["➕ Montar Nuevo Pedido de Venta", "🚚 Control de Despachos y Facturación"], horizontal=True)
         
         if sub_vta == "➕ Montar Nuevo Pedido de Venta":
-            st.subheader("Registrar Orden de Pedido Comercial")
+            st.subheader("Registrar Orden de Pedido Comercial", anchor=False)
             if rol not in ["Administrador", "Comercial"]:
                 st.warning("⚠️ Perfil sin autorización para montar pedidos de venta.")
             else:
@@ -491,7 +491,7 @@ else:
                                     st.error(f"Error al registrar pedido: {e}")
 
         elif sub_vta == "🚚 Control de Despachos y Facturación":
-            st.subheader("Despacho e Impacto en Inventario / Kardex")
+            st.subheader("Despacho e Impacto en Inventario / Kardex", anchor=False)
             try:
                 df_pedidos = pd.read_sql_query("""
                     SELECT p.id, p.numero_pedido, p.cliente, pr.codigo_au, pr.nombre_au, p.cantidad_solicitada, p.precio_unitario, p.vendedor, p.fecha_pedido, p.estado
@@ -534,7 +534,7 @@ else:
             st.warning("⚠️ Rol limitado: La creación y modificación de productos es función exclusiva del rol **Administrador**.")
         else:
             with st.form("crear_producto"):
-                st.subheader("Formulario de Creación de Producto AURANZA")
+                st.subheader("Formulario de Creación de Producto AURANZA", anchor=False)
                 c1, c2, c3 = st.columns(3)
                 codigo_au = c1.text_input("Código AU Interno (ej: AUH0001):")
                 codigo_prov = c2.text_input("Código Proveedor (ej: XB0102):")
@@ -568,7 +568,7 @@ else:
                     except Exception as e:
                         st.error(f"Error al crear producto: {e}")
 
-        st.subheader("Inventario Consolidado por Productos")
+        st.subheader("Inventario Consolidado por Productos", anchor=False)
         try:
             df_prods_all = pd.read_sql_query("SELECT p.codigo_au, p.codigo_proveedor, p.nombre_au, p.proveedor, b.nombre as bodega, p.costo_promedio, p.ultimo_costo, p.precio_venta FROM productos p JOIN bodegas b ON p.bodega_id = b.id", conn)
             st.dataframe(df_prods_all, use_container_width=True)
@@ -576,12 +576,12 @@ else:
             st.info("Aún no hay productos registrados.")
 
     elif menu == "🧾 Órdenes de Compra y Recepción":
-        st.title("🧾 Gestión de Compras y Recepciones")
+        st.title("🧾 Gestión de Compras y Recepciones", anchor=False)
         
         sub_oc = st.radio("Acción a realizar:", ["Emitir Órden de Compra (OC)", "📦 Recepción de Mercancía en Bodega"], horizontal=True)
 
         if sub_oc == "Emitir Órden de Compra (OC)":
-            st.subheader("Generar Nueva Orden de Compra")
+            st.subheader("Generar Nueva Orden de Compra", anchor=False)
             if rol not in ["Administrador"]:
                 st.warning("⚠️ Emisión de Compras restringida a perfil Administrador.")
             else:
@@ -617,7 +617,7 @@ else:
                         st.success(f"✅ OC {num_oc} emitida correctamente.")
 
         elif sub_oc == "📦 Recepción de Mercancía en Bodega":
-            st.subheader("Entrada de Mercancía a Bodega (Recepción)")
+            st.subheader("Entrada de Mercancía a Bodega (Recepción)", anchor=False)
             if rol not in ["Administrador", "Bodega"]:
                 st.warning("⚠️ Modulo de recepción reservado para perfiles Bodega o Administrador.")
             else:
@@ -663,9 +663,9 @@ else:
                             st.success("✅ Entrada registrada exitosamente. Costo promedio ponderado móvil actualizado.")
 
     elif menu == "🧪 Kits y Ensambles":
-        st.title("🧪 Creación y Ensamble de Kits")
+        st.title("🧪 Creación y Ensamble de Kits", anchor=False)
         
-        st.subheader("Fórmulas de Ensamble y Costo Teórico Actualizado")
+        st.subheader("Fórmulas de Ensamble y Costo Teórico Actualizado", anchor=False)
         try:
             df_prods = pd.read_sql_query("SELECT id, codigo_au, nombre_au, costo_promedio FROM productos", conn)
         except Exception:
@@ -699,7 +699,7 @@ else:
                         conn.commit()
                         st.success("✅ Fórmula de Kit guardada.")
 
-        st.subheader("Análisis de Costo y Margen Teórico por Kit")
+        st.subheader("Análisis de Costo y Margen Teórico por Kit", anchor=False)
         try:
             df_kits_list = pd.read_sql_query("SELECT * FROM kits", conn)
             for idx, k_item in df_kits_list.iterrows():
@@ -716,7 +716,7 @@ else:
             st.info("Aún no hay kits creados.")
 
     elif menu == "🚨 Requerimiento Comercial (MRP)":
-        st.title("🚨 Motor MRP: Análisis de Materias Primas y Empaques")
+        st.title("🚨 Motor MRP: Análisis de Materias Primas y Empaques", anchor=False)
         
         try:
             df_kits = pd.read_sql_query("SELECT * FROM kits", conn)
@@ -755,7 +755,7 @@ else:
                         faltante_neto = necesario - disponible_neto
                         st.error(f"🔴 **{row['nombre_au']} ({row['codigo_au']})**: Requerido: {necesario:.2f} KG | Stock Físico: {disponible_fisico:.2f} KG | OC Abiertas: {oc_pendientes:.2f} KG | **FALTANTE NETO A COMPRAR: {faltante_neto:.2f} KG**")
                 
-                st.subheader("2. Regla de Empaques y Evaluación en Bodega 4")
+                st.subheader("2. Regla de Empaques y Evaluación en Bodega 4", anchor=False)
                 if cant_solicitada <= 2:
                     unidades_envase = 1
                     tipo_envase = "Envase 2 KG"
@@ -770,7 +770,7 @@ else:
                 st.metric("Costo Estimado Mezcla Materias Primas", f"${costo_mezcla_total:,.2f} COP")
 
     elif menu == "📜 Kardex e Historial":
-        st.title("📜 Trazabilidad Completa / Kardex Auditable")
+        st.title("📜 Trazabilidad Completa / Kardex Auditable", anchor=False)
         try:
             df_kardex = pd.read_sql_query("""
                 SELECT k.fecha, p.codigo_au, p.nombre_au, b.nombre as bodega, k.tipo_movimiento, k.cantidad, k.costo_unitario, k.usuario, k.motivo, k.lote, k.documento_ref
@@ -787,9 +787,9 @@ else:
             st.info("Aún no se han generado registros en el Kardex.")
 
     elif menu == "⚙️ Mi Cuenta y Configuración":
-        st.title("⚙️ Gestión de Claves y Usuarios")
+        st.title("⚙️ Gestión de Claves y Usuarios", anchor=False)
         
-        st.subheader("🔑 Cambiar mi Contraseña")
+        st.subheader("🔑 Cambiar mi Contraseña", anchor=False)
         with st.form("form_cambiar_clave"):
             pwd_actual = st.text_input("Contraseña Actual", type="password")
             pwd_nueva = st.text_input("Nueva Contraseña", type="password")
