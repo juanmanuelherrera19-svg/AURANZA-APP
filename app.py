@@ -40,159 +40,167 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
     
-    # Tabla de Usuarios
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS usuarios (
-        id SERIAL PRIMARY KEY,
-        username VARCHAR(100) UNIQUE NOT NULL,
-        password TEXT NOT NULL,
-        rol VARCHAR(50) NOT NULL
-    )""")
-    
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS bodegas (
-        id SERIAL PRIMARY KEY,
-        nombre VARCHAR(100) UNIQUE NOT NULL
-    )""")
-    
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS proveedores (
-        id SERIAL PRIMARY KEY,
-        nombre VARCHAR(150) UNIQUE NOT NULL,
-        nit VARCHAR(50),
-        contacto TEXT,
-        telefono VARCHAR(50),
-        email VARCHAR(100)
-    )""")
-    
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS productos (
-        id SERIAL PRIMARY KEY,
-        codigo_au VARCHAR(100) UNIQUE NOT NULL,
-        codigo_proveedor VARCHAR(100) NOT NULL,
-        nombre_au TEXT NOT NULL,
-        nombre_proveedor TEXT NOT NULL,
-        proveedor TEXT NOT NULL,
-        categoria VARCHAR(100) NOT NULL,
-        linea VARCHAR(100) NOT NULL,
-        bodega_id INTEGER NOT NULL REFERENCES bodegas(id),
-        unidad_medida VARCHAR(20) DEFAULT 'KG',
-        costo_promedio NUMERIC DEFAULT 0.0,
-        ultimo_costo NUMERIC DEFAULT 0.0,
-        fecha_ultimo_costo TEXT,
-        precio_venta NUMERIC DEFAULT 0.0,
-        punto_pedido NUMERIC DEFAULT 0.0,
-        nivel_minimo NUMERIC DEFAULT 0.0,
-        nivel_maximo NUMERIC DEFAULT 0.0,
-        comp_venta NUMERIC DEFAULT 0.0,
-        comp_op NUMERIC DEFAULT 0.0,
-        comp_requisicion NUMERIC DEFAULT 0.0,
-        aplica_iva VARCHAR(2) DEFAULT 'SI'
-    )""")
-    
-    # Migración en caliente por si la columna no existía en PostgreSQL
+    try:
+        # Tabla de Usuarios
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id SERIAL PRIMARY KEY,
+            username VARCHAR(100) UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            rol VARCHAR(50) NOT NULL
+        )""")
+        
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bodegas (
+            id SERIAL PRIMARY KEY,
+            nombre VARCHAR(100) UNIQUE NOT NULL
+        )""")
+        
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS proveedores (
+            id SERIAL PRIMARY KEY,
+            nombre VARCHAR(150) UNIQUE NOT NULL,
+            nit VARCHAR(50),
+            contacto TEXT,
+            telefono VARCHAR(50),
+            email VARCHAR(100)
+        )""")
+        
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS productos (
+            id SERIAL PRIMARY KEY,
+            codigo_au VARCHAR(100) UNIQUE NOT NULL,
+            codigo_proveedor VARCHAR(100) NOT NULL,
+            nombre_au TEXT NOT NULL,
+            nombre_proveedor TEXT NOT NULL,
+            proveedor TEXT NOT NULL,
+            categoria VARCHAR(100) NOT NULL,
+            linea VARCHAR(100) NOT NULL,
+            bodega_id INTEGER NOT NULL REFERENCES bodegas(id),
+            unidad_medida VARCHAR(20) DEFAULT 'KG',
+            costo_promedio NUMERIC DEFAULT 0.0,
+            ultimo_costo NUMERIC DEFAULT 0.0,
+            fecha_ultimo_costo TEXT,
+            precio_venta NUMERIC DEFAULT 0.0,
+            punto_pedido NUMERIC DEFAULT 0.0,
+            nivel_minimo NUMERIC DEFAULT 0.0,
+            nivel_maximo NUMERIC DEFAULT 0.0,
+            comp_venta NUMERIC DEFAULT 0.0,
+            comp_op NUMERIC DEFAULT 0.0,
+            comp_requisicion NUMERIC DEFAULT 0.0,
+            aplica_iva VARCHAR(2) DEFAULT 'SI'
+        )""")
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+
+    # Migración en caliente protegida por rollback en caso de fallo
     try:
         cursor.execute("ALTER TABLE productos ADD COLUMN IF NOT EXISTS aplica_iva VARCHAR(2) DEFAULT 'SI';")
+        conn.commit()
     except Exception:
-        pass
+        conn.rollback()
     
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS lotes (
-        id SERIAL PRIMARY KEY,
-        producto_id INTEGER NOT NULL REFERENCES productos(id),
-        bodega_id INTEGER NOT NULL REFERENCES bodegas(id),
-        lote_proveedor TEXT NOT NULL,
-        fecha_fabricacion TEXT,
-        fecha_vencimiento TEXT,
-        fecha_recepcion TEXT,
-        cantidad_actual NUMERIC DEFAULT 0.0,
-        costo_unitario NUMERIC DEFAULT 0.0,
-        remision_factura TEXT,
-        observaciones TEXT
-    )""")
+    try:
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lotes (
+            id SERIAL PRIMARY KEY,
+            producto_id INTEGER NOT NULL REFERENCES productos(id),
+            bodega_id INTEGER NOT NULL REFERENCES bodegas(id),
+            lote_proveedor TEXT NOT NULL,
+            fecha_fabricacion TEXT,
+            fecha_vencimiento TEXT,
+            fecha_recepcion TEXT,
+            cantidad_actual NUMERIC DEFAULT 0.0,
+            costo_unitario NUMERIC DEFAULT 0.0,
+            remision_factura TEXT,
+            observaciones TEXT
+        )""")
 
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS ordenes_compra (
-        id SERIAL PRIMARY KEY,
-        numero_oc VARCHAR(100) UNIQUE NOT NULL,
-        proveedor TEXT NOT NULL,
-        estado VARCHAR(50) DEFAULT 'ABIERTA',
-        fecha_creacion TEXT NOT NULL
-    )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ordenes_compra (
+            id SERIAL PRIMARY KEY,
+            numero_oc VARCHAR(100) UNIQUE NOT NULL,
+            proveedor TEXT NOT NULL,
+            estado VARCHAR(50) DEFAULT 'ABIERTA',
+            fecha_creacion TEXT NOT NULL
+        )""")
 
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS ordenes_compra_items (
-        id SERIAL PRIMARY KEY,
-        oc_id INTEGER NOT NULL REFERENCES ordenes_compra(id),
-        producto_id INTEGER NOT NULL REFERENCES productos(id),
-        cantidad_solicitada NUMERIC NOT NULL,
-        costo_pactado NUMERIC NOT NULL,
-        moneda VARCHAR(10) DEFAULT 'COP',
-        trm NUMERIC DEFAULT 1.0,
-        subtotal NUMERIC DEFAULT 0.0,
-        monto_iva NUMERIC DEFAULT 0.0,
-        costo_total NUMERIC DEFAULT 0.0
-    )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ordenes_compra_items (
+            id SERIAL PRIMARY KEY,
+            oc_id INTEGER NOT NULL REFERENCES ordenes_compra(id),
+            producto_id INTEGER NOT NULL REFERENCES productos(id),
+            cantidad_solicitada NUMERIC NOT NULL,
+            costo_pactado NUMERIC NOT NULL,
+            moneda VARCHAR(10) DEFAULT 'COP',
+            trm NUMERIC DEFAULT 1.0,
+            subtotal NUMERIC DEFAULT 0.0,
+            monto_iva NUMERIC DEFAULT 0.0,
+            costo_total NUMERIC DEFAULT 0.0
+        )""")
 
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS pedidos_venta (
-        id SERIAL PRIMARY KEY,
-        numero_pedido VARCHAR(100) UNIQUE NOT NULL,
-        cliente TEXT NOT NULL,
-        producto_id INTEGER NOT NULL REFERENCES productos(id),
-        cantidad_solicitada NUMERIC NOT NULL,
-        precio_unitario NUMERIC NOT NULL,
-        vendedor TEXT NOT NULL,
-        fecha_pedido TEXT NOT NULL,
-        estado VARCHAR(50) DEFAULT 'PENDIENTE',
-        subtotal NUMERIC DEFAULT 0.0,
-        monto_iva NUMERIC DEFAULT 0.0,
-        precio_total NUMERIC DEFAULT 0.0
-    )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pedidos_venta (
+            id SERIAL PRIMARY KEY,
+            numero_pedido VARCHAR(100) UNIQUE NOT NULL,
+            cliente TEXT NOT NULL,
+            producto_id INTEGER NOT NULL REFERENCES productos(id),
+            cantidad_solicitada NUMERIC NOT NULL,
+            precio_unitario NUMERIC NOT NULL,
+            vendedor TEXT NOT NULL,
+            fecha_pedido TEXT NOT NULL,
+            estado VARCHAR(50) DEFAULT 'PENDIENTE',
+            subtotal NUMERIC DEFAULT 0.0,
+            monto_iva NUMERIC DEFAULT 0.0,
+            precio_total NUMERIC DEFAULT 0.0
+        )""")
 
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS kits (
-        id SERIAL PRIMARY KEY,
-        codigo_kit VARCHAR(100) UNIQUE NOT NULL,
-        nombre_kit TEXT NOT NULL
-    )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS kits (
+            id SERIAL PRIMARY KEY,
+            codigo_kit VARCHAR(100) UNIQUE NOT NULL,
+            nombre_kit TEXT NOT NULL
+        )""")
 
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS kit_componentes (
-        id SERIAL PRIMARY KEY,
-        kit_id INTEGER NOT NULL REFERENCES kits(id),
-        componente_id INTEGER NOT NULL REFERENCES productos(id),
-        porcentaje_o_cantidad NUMERIC NOT NULL
-    )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS kit_componentes (
+            id SERIAL PRIMARY KEY,
+            kit_id INTEGER NOT NULL REFERENCES kits(id),
+            componente_id INTEGER NOT NULL REFERENCES productos(id),
+            porcentaje_o_cantidad NUMERIC NOT NULL
+        )""")
 
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS kardex (
-        id SERIAL PRIMARY KEY,
-        fecha TEXT NOT NULL,
-        producto_id INTEGER NOT NULL REFERENCES productos(id),
-        bodega_id INTEGER NOT NULL REFERENCES bodegas(id),
-        tipo_movimiento VARCHAR(50) NOT NULL,
-        cantidad NUMERIC NOT NULL,
-        costo_unitario NUMERIC NOT NULL,
-        usuario TEXT NOT NULL,
-        motivo TEXT,
-        lote TEXT,
-        documento_ref TEXT
-    )""")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS kardex (
+            id SERIAL PRIMARY KEY,
+            fecha TEXT NOT NULL,
+            producto_id INTEGER NOT NULL REFERENCES productos(id),
+            bodega_id INTEGER NOT NULL REFERENCES bodegas(id),
+            tipo_movimiento VARCHAR(50) NOT NULL,
+            cantidad NUMERIC NOT NULL,
+            costo_unitario NUMERIC NOT NULL,
+            usuario TEXT NOT NULL,
+            motivo TEXT,
+            lote TEXT,
+            documento_ref TEXT
+        )""")
 
-    default_users = [
-        ("admin", make_hashes("admin123"), "Administrador"),
-        ("bodega", make_hashes("bodega123"), "Bodega"),
-        ("comercial", make_hashes("comercial123"), "Comercial")
-    ]
-    for user, pwd, role in default_users:
-        cursor.execute("INSERT INTO usuarios (username, password, rol) VALUES (%s, %s, %s) ON CONFLICT (username) DO NOTHING", (user, pwd, role))
+        default_users = [
+            ("admin", make_hashes("admin123"), "Administrador"),
+            ("bodega", make_hashes("bodega123"), "Bodega"),
+            ("comercial", make_hashes("comercial123"), "Comercial")
+        ]
+        for user, pwd, role in default_users:
+            cursor.execute("INSERT INTO usuarios (username, password, rol) VALUES (%s, %s, %s) ON CONFLICT (username) DO NOTHING", (user, pwd, role))
 
-    bodegas = ["FINE", "INDUSTRIAL", "MATERIAS PRIMAS", "ENVASES Y DEMÁS"]
-    for b in bodegas:
-        cursor.execute("INSERT INTO bodegas (nombre) VALUES (%s) ON CONFLICT (nombre) DO NOTHING", (b,))
+        bodegas = ["FINE", "INDUSTRIAL", "MATERIAS PRIMAS", "ENVASES Y DEMÁS"]
+        for b in bodegas:
+            cursor.execute("INSERT INTO bodegas (nombre) VALUES (%s) ON CONFLICT (nombre) DO NOTHING", (b,))
 
-    conn.commit()
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
 
 init_db()
 
