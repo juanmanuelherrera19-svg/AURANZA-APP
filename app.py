@@ -4,6 +4,11 @@ import psycopg2.extras
 import pandas as pd
 from datetime import datetime
 import hashlib
+import io
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
 
 # ==========================================
 # CONFIGURACIÓN E INICIALIZACIÓN DE BD (SUPABASE)
@@ -49,6 +54,16 @@ def init_db():
     )""")
     
     cursor.execute("""
+    CREATE TABLE IF NOT EXISTS proveedores (
+        id SERIAL PRIMARY KEY,
+        nombre VARCHAR(150) UNIQUE NOT NULL,
+        nit VARCHAR(50),
+        contacto TEXT,
+        telefono VARCHAR(50),
+        email VARCHAR(100)
+    )""")
+    
+    cursor.execute("""
     CREATE TABLE IF NOT EXISTS productos (
         id SERIAL PRIMARY KEY,
         codigo_au VARCHAR(100) UNIQUE NOT NULL,
@@ -69,8 +84,15 @@ def init_db():
         nivel_maximo NUMERIC DEFAULT 0.0,
         comp_venta NUMERIC DEFAULT 0.0,
         comp_op NUMERIC DEFAULT 0.0,
-        comp_requisicion NUMERIC DEFAULT 0.0
+        comp_requisicion NUMERIC DEFAULT 0.0,
+        aplica_iva VARCHAR(2) DEFAULT 'SI'
     )""")
+    
+    # Migración en caliente por si la columna no existía en PostgreSQL
+    try:
+        cursor.execute("ALTER TABLE productos ADD COLUMN IF NOT EXISTS aplica_iva VARCHAR(2) DEFAULT 'SI';")
+    except Exception:
+        pass
     
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS lotes (
@@ -104,7 +126,10 @@ def init_db():
         cantidad_solicitada NUMERIC NOT NULL,
         costo_pactado NUMERIC NOT NULL,
         moneda VARCHAR(10) DEFAULT 'COP',
-        trm NUMERIC DEFAULT 1.0
+        trm NUMERIC DEFAULT 1.0,
+        subtotal NUMERIC DEFAULT 0.0,
+        monto_iva NUMERIC DEFAULT 0.0,
+        costo_total NUMERIC DEFAULT 0.0
     )""")
 
     cursor.execute("""
@@ -117,7 +142,10 @@ def init_db():
         precio_unitario NUMERIC NOT NULL,
         vendedor TEXT NOT NULL,
         fecha_pedido TEXT NOT NULL,
-        estado VARCHAR(50) DEFAULT 'PENDIENTE'
+        estado VARCHAR(50) DEFAULT 'PENDIENTE',
+        subtotal NUMERIC DEFAULT 0.0,
+        monto_iva NUMERIC DEFAULT 0.0,
+        precio_total NUMERIC DEFAULT 0.0
     )""")
 
     cursor.execute("""
@@ -211,7 +239,7 @@ def obtener_oc_pendientes(producto_id):
     conn.close()
     return float(res) if res else 0.0
 
-def registrar_recepcion(producto_id, cantidad, lote_prov, fab_date, exp_date, costo_cop, moneda, trm, costo_ext, remision, obs, usuario, oc_id=None):
+def registrar_recepcion(producto_id, cantidad, lote_prov, fab_date, exp_date, costo_cop_base, moneda, trm, costo_ext, remision, obs, usuario, oc_id=None):
     conn = get_connection()
     c = conn.cursor()
     
@@ -221,25 +249,25 @@ def registrar_recepcion(producto_id, cantidad, lote_prov, fab_date, exp_date, co
     existencia_act = obtener_existencia_producto(producto_id)
     costo_prom_act = float(prod['costo_promedio']) if prod['costo_promedio'] else 0.0
     
-    nuevo_costo_prom = calcular_costo_promedio_movil(existencia_act, costo_prom_act, cantidad, costo_cop)
+    nuevo_costo_prom = calcular_costo_promedio_movil(existencia_act, costo_prom_act, cantidad, costo_cop_base)
     fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     c.execute("""
         UPDATE productos 
         SET costo_promedio = %s, ultimo_costo = %s, fecha_ultimo_costo = %s 
         WHERE id = %s
-    """, (nuevo_costo_prom, costo_cop, fecha_hoy, producto_id))
+    """, (nuevo_costo_prom, costo_cop_base, fecha_hoy, producto_id))
     
     c.execute("""
         INSERT INTO lotes (producto_id, bodega_id, lote_proveedor, fecha_fabricacion, fecha_vencimiento, fecha_recepcion, cantidad_actual, costo_unitario, remision_factura, observaciones)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-    """, (producto_id, prod['bodega_id'], lote_prov, fab_date, exp_date, fecha_hoy, cantidad, costo_cop, remision, obs))
+    """, (producto_id, prod['bodega_id'], lote_prov, fab_date, exp_date, fecha_hoy, cantidad, costo_cop_base, remision, obs))
     
     motivo_txt = f"Recepción Compra ({moneda} TRM: {trm})" if moneda != "COP" else "Recepción Compra"
     c.execute("""
         INSERT INTO kardex (fecha, producto_id, bodega_id, tipo_movimiento, cantidad, costo_unitario, usuario, motivo, lote, documento_ref)
         VALUES (%s, %s, %s, 'ENTRADA', %s, %s, %s, %s, %s, %s)
-    """, (fecha_hoy, producto_id, prod['bodega_id'], cantidad, costo_cop, usuario, motivo_txt, lote_prov, remision))
+    """, (fecha_hoy, producto_id, prod['bodega_id'], cantidad, costo_cop_base, usuario, motivo_txt, lote_prov, remision))
     
     if oc_id:
         c.execute("UPDATE ordenes_compra SET estado = 'RECIBIDA' WHERE id = %s", (oc_id,))
@@ -247,15 +275,15 @@ def registrar_recepcion(producto_id, cantidad, lote_prov, fab_date, exp_date, co
     conn.commit()
     conn.close()
 
-def registrar_pedido_venta(num_ped, cliente, producto_id, cantidad, precio, vendedor):
+def registrar_pedido_venta(num_ped, cliente, producto_id, cantidad, precio, vendedor, subtotal, monto_iva, total):
     conn = get_connection()
     c = conn.cursor()
     
     fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     c.execute("""
-        INSERT INTO pedidos_venta (numero_pedido, cliente, producto_id, cantidad_solicitada, precio_unitario, vendedor, fecha_pedido, estado)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDIENTE')
-    """, (num_ped, cliente, producto_id, cantidad, precio, vendedor, fecha_hoy))
+        INSERT INTO pedidos_venta (numero_pedido, cliente, producto_id, cantidad_solicitada, precio_unitario, vendedor, fecha_pedido, estado, subtotal, monto_iva, precio_total)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDIENTE', %s, %s, %s)
+    """, (num_ped, cliente, producto_id, cantidad, precio, vendedor, fecha_hoy, subtotal, monto_iva, total))
     
     c.execute("UPDATE productos SET comp_venta = comp_venta + %s WHERE id = %s", (cantidad, producto_id))
     conn.commit()
@@ -309,6 +337,74 @@ def despachar_pedido_venta(pedido_id, usuario_despacha):
     conn.close()
     return True, "Despacho realizado con éxito."
 
+def generar_pdf_orden_compra(num_oc, proveedor, items_df):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    story = []
+    
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'TitleStyle',
+        parent=styles['Heading1'],
+        fontSize=16,
+        textColor=colors.HexColor('#000080'),
+        spaceAfter=10
+    )
+    
+    story.append(Paragraph("<b>ORDEN DE COMPRA OFICIAL</b>", title_style))
+    story.append(Paragraph(f"<b>N° Orden:</b> {num_oc}", styles['Normal']))
+    story.append(Paragraph(f"<b>Proveedor:</b> {proveedor}", styles['Normal']))
+    story.append(Paragraph(f"<b>Fecha Emisión:</b> {datetime.now().strftime('%Y-%m-%d')}", styles['Normal']))
+    story.append(Spacer(1, 15))
+    
+    # ÚNICAMENTE DATOS DE PROVEEDOR
+    data = [["Cód. Proveedor", "Descripción Proveedor", "Cant.", "Moneda", "P. Unitario", "Subtotal", "IVA", "Total"]]
+    
+    subtotal_gral = 0.0
+    iva_gral = 0.0
+    total_gral = 0.0
+    
+    for idx, row in items_df.iterrows():
+        sub = float(row['subtotal'])
+        iva = float(row['monto_iva'])
+        tot = float(row['costo_total'])
+        
+        subtotal_gral += sub
+        iva_gral += iva
+        total_gral += tot
+        
+        data.append([
+            str(row['codigo_proveedor']),
+            str(row['nombre_proveedor']),
+            f"{float(row['cantidad_solicitada']):,.2f}",
+            str(row['moneda']),
+            f"${float(row['costo_pactado']):,.2f}",
+            f"${sub:,.2f}",
+            f"${iva:,.2f}",
+            f"${tot:,.2f}"
+        ])
+        
+    t = Table(data)
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#000080')),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,0), (-1,-1), 8),
+        ('BOTTOMPADDING', (0,0), (-1,0), 6),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.grey)
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 15))
+    
+    story.append(Paragraph(f"<b>SUBTOTAL GENERAL:</b> ${subtotal_gral:,.2f}", styles['Normal']))
+    story.append(Paragraph(f"<b>TOTAL IVA (19%):</b> ${iva_gral:,.2f}", styles['Normal']))
+    story.append(Paragraph(f"<b>GRAN TOTAL DE LA COMPRA:</b> ${total_gral:,.2f}", styles['Heading3']))
+    
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
 # ==========================================
 # CONTROL DE SESIÓN Y LOGIN
 # ==========================================
@@ -337,7 +433,6 @@ if not st.session_state['logged_in']:
             else:
                 st.error("❌ Usuario o contraseña incorrectos.")
 else:
-    # MENÚ LATERAL RESTAURADO
     st.sidebar.title("🧪 AURANZA SAS ERP")
     st.sidebar.markdown(f"👤 **Usuario:** `{st.session_state['username']}`")
     st.sidebar.markdown(f"🛡️ **Rol:** `{st.session_state['rol']}`")
@@ -356,8 +451,9 @@ else:
         "",
         [
             "📊 Ficha de Producto",
-            "🛒 Pedidos de Venta",
+            "🛒 Pedidos y Cotizaciones",
             "📦 Maestro de Productos y Lotes",
+            "🏢 Directorio de Proveedores",
             "🧾 Órdenes de Compra y Recepción",
             "🧪 Kits y Ensambles",
             "🚨 Requerimiento Comercial (MRP)",
@@ -369,7 +465,6 @@ else:
     conn = get_connection()
     rol = st.session_state['rol']
 
-    # BANNER GENERAL DE NOTIFICACIONES
     try:
         df_p_pend = pd.read_sql_query("SELECT p.numero_pedido, p.cliente, pr.nombre_au, p.cantidad_solicitada, p.vendedor FROM pedidos_venta p JOIN productos pr ON p.producto_id = pr.id WHERE p.estado = 'PENDIENTE'", conn)
         if not df_p_pend.empty:
@@ -429,14 +524,14 @@ else:
             -----------------------------------------------------------------------------------------------------<br>
             | Item &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{p['codigo_au']}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>{str(p['nombre_au']).upper()}</b><br>
             | Cód Proveedor: <b>{p['codigo_proveedor']}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; PROVEEDOR: <b>{str(p['proveedor']).upper()}</b><br>
-            | Localizacion : <b>{str(p['nombre_bodega']).upper()}</b><br>
+            | Localizacion : <b>{str(p['nombre_bodega']).upper()}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; APLICA IVA: <b>{p.get('aplica_iva', 'SI')}</b><br>
             -----------------------------------------------------------------------------------------------------<br>
             | U.M: <b>{p['unidad_medida']}</b> Clasif.: <b>{p['categoria']} / {p['linea']}</b> &nbsp;|&nbsp; Acumulados Desde &nbsp;&nbsp;&nbsp;&nbsp;: AURANZA-2026<br>
             +-----------------------------------------------+ Total Entradas &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {tot_entradas:,.3f}<br>
             | Existencia Actual : <b>{existencia_total:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Total Salidas &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {tot_salidas:,.3f}<br>
             | Comp. en Venta &nbsp;&nbsp;&nbsp;&nbsp;: <b>{comp_venta:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+------------------------------------+<br>
-            | Comp. en O.P. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{comp_op:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Costo Prom. Ponderado: $ {costo_promedio:,.2f}<br>
-            | Comp. Requisicion : <b>{comp_requisicion:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Ultimo Costo &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: $ {ultimo_costo:,.2f}<br>
+            | Comp. en O.P. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{comp_op:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Costo Prom. Base &nbsp;&nbsp;&nbsp;&nbsp;: $ {costo_promedio:,.2f}<br>
+            | Comp. Requisicion : <b>{comp_requisicion:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Ultimo Costo Base &nbsp;&nbsp;&nbsp;: $ {ultimo_costo:,.2f}<br>
             | Comp. en O.C. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{comp_oc:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Fecha Ult. Costo &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {p['fecha_ultimo_costo'] if p['fecha_ultimo_costo'] else 'N/A'}<br>
             | <b>Total Disponible &nbsp;: {disp_total:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+------------------------------------+<br>
             -----------------------------------------------------------------------------------------------------<br>
@@ -452,18 +547,18 @@ else:
         else:
             st.warning("⚠️ No se encontraron productos registrados.")
 
-    elif menu == "🛒 Pedidos de Venta":
-        st.title("🛒 Módulo de Pedidos de Venta y Despachos")
+    elif menu == "🛒 Pedidos y Cotizaciones":
+        st.title("🛒 Módulo de Pedidos de Venta, Cotizaciones y Despachos")
         
-        sub_vta = st.radio("Acción a realizar:", ["➕ Montar Nuevo Pedido de Venta", "🚚 Control de Despachos y Facturación"], horizontal=True)
+        sub_vta = st.radio("Acción a realizar:", ["➕ Montar Nuevo Pedido / Cotización", "🚚 Control de Despachos y Facturación"], horizontal=True)
         
-        if sub_vta == "➕ Montar Nuevo Pedido de Venta":
-            st.subheader("Registrar Orden de Pedido Comercial", anchor=False)
+        if sub_vta == "➕ Montar Nuevo Pedido / Cotización":
+            st.subheader("Registrar Orden de Pedido Comercial / Cotización", anchor=False)
             if rol not in ["Administrador", "Comercial"]:
                 st.warning("⚠️ Perfil sin autorización para montar pedidos de venta.")
             else:
                 try:
-                    df_prods_vta = pd.read_sql_query("SELECT id, codigo_au, nombre_au, precio_venta FROM productos", conn)
+                    df_prods_vta = pd.read_sql_query("SELECT id, codigo_au, nombre_au, precio_venta, aplica_iva FROM productos", conn)
                 except Exception:
                     df_prods_vta = pd.DataFrame()
                 
@@ -482,16 +577,27 @@ else:
                         
                         c_p3, c_p4 = st.columns(2)
                         cant_ped = c_p3.number_input("Cantidad Requerida (KG/Unidades):", min_value=0.1, value=10.0)
-                        precio_ped = c_p4.number_input("Precio de Venta Unitario ($ COP):", value=float(p_sel_info['precio_venta']) if p_sel_info['precio_venta'] else 0.0)
+                        precio_ped_base = c_p4.number_input("Precio Base Unitario ($ COP sin IVA):", value=float(p_sel_info['precio_venta']) if p_sel_info['precio_venta'] else 0.0)
                         
-                        st.info(f"📊 **Stock Físico Actual:** {stock_disp:,.2f} KG | **Valor Total Venta:** ${cant_ped * precio_ped:,.2f} COP")
+                        subtotal = cant_ped * precio_ped_base
+                        aplica_iva = p_sel_info.get('aplica_iva', 'SI') == 'SI'
+                        monto_iva = subtotal * 0.19 if aplica_iva else 0.0
+                        total_pedido = subtotal + monto_iva
+                        
+                        st.markdown(f"""
+                        * **Subtotal Base:** ${subtotal:,.2f} COP
+                        * **IVA Calculado (19%):** ${monto_iva:,.2f} COP
+                        * **TOTAL PEDIDO / COTIZACIÓN:** `${total_pedido:,.2f} COP`
+                        """)
+                        
+                        st.info(f"📊 **Stock Físico Actual:** {stock_disp:,.2f} KG")
                         
                         if st.form_submit_button("Guardar y Comprometer Inventario"):
                             if not num_ped or not cliente:
                                 st.error("❌ Indique el número de pedido y el cliente.")
                             else:
                                 try:
-                                    registrar_pedido_venta(num_ped, cliente, prod_ped_id, cant_ped, precio_ped, st.session_state['username'])
+                                    registrar_pedido_venta(num_ped, cliente, prod_ped_id, cant_ped, precio_ped_base, st.session_state['username'], subtotal, monto_iva, total_pedido)
                                     st.success(f"✅ Pedido {num_ped} registrado. Se sumó {cant_ped} KG a Comprometido en Venta.")
                                     st.rerun()
                                 except Exception as e:
@@ -501,7 +607,7 @@ else:
             st.subheader("Despacho e Impacto en Inventario / Kardex", anchor=False)
             try:
                 df_pedidos = pd.read_sql_query("""
-                    SELECT p.id, p.numero_pedido, p.cliente, pr.codigo_au, pr.nombre_au, p.cantidad_solicitada, p.precio_unitario, p.vendedor, p.fecha_pedido, p.estado
+                    SELECT p.id, p.numero_pedido, p.cliente, pr.codigo_au, pr.nombre_au, p.cantidad_solicitada, p.precio_unitario, p.subtotal, p.monto_iva, p.precio_total, p.vendedor, p.fecha_pedido, p.estado
                     FROM pedidos_venta p
                     JOIN productos pr ON p.producto_id = pr.id
                     ORDER BY p.id DESC
@@ -555,32 +661,69 @@ else:
                 c7, c8, c9 = st.columns(3)
                 categoria = c7.selectbox("Categoría:", ["FRAGANCIA", "MATERIA PRIMA", "ENVASE", "EMPAQUE"])
                 linea = c8.selectbox("Línea:", ["Fragancias Homecare", "Fragancias Capilares", "Fragancias Óleo", "Fragancias Reeds", "Perfumería Fina Masculina", "Perfumería Fina Femenina", "Perfumería Fina Unisex", "Envases", "Insumos"])
-                precio_vta = c9.number_input("Precio de Venta ($):", min_value=0.0)
+                precio_vta = c9.number_input("Precio de Venta Base ($):", min_value=0.0)
                 
-                c10, c11, c12 = st.columns(3)
-                pt_pedido = c10.number_input("Punto de Pedido (KG/Unidades):", min_value=0.0)
+                c10, c11, c12, c13 = st.columns(4)
+                pt_pedido = c10.number_input("Punto de Pedido:", min_value=0.0)
                 nv_min = c11.number_input("Nivel Mínimo:", min_value=0.0)
                 nv_max = c12.number_input("Nivel Máximo:", min_value=0.0)
+                
+                # IVA PREDETERMINADO EN SÍ
+                aplica_iva = c13.selectbox("Aplica IVA (19%):", ["SI", "NO"], index=0)
                 
                 btn_crear = st.form_submit_button("Guardar Producto")
                 if btn_crear:
                     try:
                         c = conn.cursor()
                         c.execute("""
-                            INSERT INTO productos (codigo_au, codigo_proveedor, nombre_au, nombre_proveedor, proveedor, categoria, linea, bodega_id, precio_venta, punto_pedido, nivel_minimo, nivel_maximo)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """, (codigo_au, codigo_prov, nombre_au, nombre_prov, proveedor, categoria, linea, bodega_id, precio_vta, pt_pedido, nv_min, nv_max))
+                            INSERT INTO productos (codigo_au, codigo_proveedor, nombre_au, nombre_proveedor, proveedor, categoria, linea, bodega_id, precio_venta, punto_pedido, nivel_minimo, nivel_maximo, aplica_iva)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (codigo_au, codigo_prov, nombre_au, nombre_prov, proveedor, categoria, linea, bodega_id, precio_vta, pt_pedido, nv_min, nv_max, aplica_iva))
                         conn.commit()
-                        st.success(f"✅ Producto {codigo_au} - {nombre_au} creado exitosamente!")
+                        st.success(f"✅ Producto {codigo_au} - {nombre_au} creado exitosamente con IVA: {aplica_iva}")
                     except Exception as e:
                         st.error(f"Error al crear producto: {e}")
 
         st.subheader("Inventario Consolidado por Productos", anchor=False)
         try:
-            df_prods_all = pd.read_sql_query("SELECT p.codigo_au, p.codigo_proveedor, p.nombre_au, p.proveedor, b.nombre as bodega, p.costo_promedio, p.ultimo_costo, p.precio_venta FROM productos p JOIN bodegas b ON p.bodega_id = b.id", conn)
+            df_prods_all = pd.read_sql_query("SELECT p.codigo_au, p.codigo_proveedor, p.nombre_au, p.proveedor, b.nombre as bodega, p.costo_promedio, p.ultimo_costo, p.precio_venta, p.aplica_iva FROM productos p JOIN bodegas b ON p.bodega_id = b.id", conn)
             st.dataframe(df_prods_all, use_container_width=True)
         except Exception:
             st.info("Aún no hay productos registrados.")
+
+    elif menu == "🏢 Directorio de Proveedores":
+        st.title("🏢 Gestión y Directorio de Proveedores", anchor=False)
+        
+        if rol == "Administrador":
+            with st.expander("➕ Registrar Nuevo Proveedor"):
+                with st.form("form_proveedor"):
+                    c_pr1, c_pr2 = st.columns(2)
+                    nom_prov = c_pr1.text_input("Nombre / Razon Social:")
+                    nit_prov = c_pr2.text_input("NIT / Documento:")
+                    
+                    c_pr3, c_pr4 = st.columns(2)
+                    contacto_prov = c_pr3.text_input("Persona de Contacto:")
+                    tel_prov = c_pr4.text_input("Teléfono:")
+                    email_prov = st.text_input("Correo Electrónico:")
+                    
+                    if st.form_submit_button("Guardar Proveedor"):
+                        if not nom_prov:
+                            st.error("❌ Ingrese el nombre del proveedor.")
+                        else:
+                            try:
+                                c = conn.cursor()
+                                c.execute("INSERT INTO proveedores (nombre, nit, contacto, telefono, email) VALUES (%s, %s, %s, %s, %s)", (nom_prov, nit_prov, contacto_prov, tel_prov, email_prov))
+                                conn.commit()
+                                st.success(f"✅ Proveedor {nom_prov} registrado correctamente.")
+                            except Exception as e:
+                                st.error(f"Error al guardar proveedor: {e}")
+
+        st.subheader("Listado de Proveedores Registrados", anchor=False)
+        try:
+            df_provs = pd.read_sql_query("SELECT nombre, nit, contacto, telefono, email FROM proveedores", conn)
+            st.dataframe(df_provs, use_container_width=True)
+        except Exception:
+            st.info("Aún no hay proveedores registrados.")
 
     elif menu == "🧾 Órdenes de Compra y Recepción":
         st.title("🧾 Gestión de Compras y Recepciones", anchor=False)
@@ -593,7 +736,7 @@ else:
                 st.warning("⚠️ Emisión de Compras restringida a perfil Administrador.")
             else:
                 try:
-                    df_prods = pd.read_sql_query("SELECT id, codigo_au, codigo_proveedor, nombre_au, nombre_proveedor, proveedor FROM productos", conn)
+                    df_prods = pd.read_sql_query("SELECT id, codigo_au, codigo_proveedor, nombre_au, nombre_proveedor, proveedor, aplica_iva FROM productos", conn)
                 except Exception:
                     df_prods = pd.DataFrame()
                 
@@ -603,25 +746,53 @@ else:
                     num_oc = st.text_input("Número de OC (ej: OC-0001):")
                     prod_oc_id = st.selectbox("Seleccionar Producto:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['nombre_au'].values[0]} | Proveedor: {df_prods[df_prods['id']==x]['proveedor'].values[0]}")
                     
+                    prod_info = df_prods[df_prods['id']==prod_oc_id].iloc[0]
+                    
                     col_a, col_b, col_c = st.columns(3)
                     cant_oc = col_a.number_input("Cantidad a Solicitar (KG/Unidades):", min_value=0.1)
                     moneda_oc = col_b.selectbox("Moneda O.C.:", ["COP", "USD", "EUR"])
                     trm_oc = col_c.number_input("TRM Proyectada (COP):", value=4100.0 if moneda_oc != "COP" else 1.0)
                     
-                    costo_unit_ext = st.number_input(f"Costo Unitario en {moneda_oc}:", min_value=0.0)
-                    costo_cop_calc = costo_unit_ext * trm_oc if moneda_oc != "COP" else costo_unit_ext
-                    st.info(f"💵 Costo Equivalente Estimado: **${costo_cop_calc:,.2f} COP / Unidad**")
-
-                    prod_info = df_prods[df_prods['id']==prod_oc_id].iloc[0]
-                    st.info(f"📋 **Documento Proveedor:** {prod_info['codigo_proveedor']} - {prod_info['nombre_proveedor']} | **Interno AU:** {prod_info['codigo_au']} - {prod_info['nombre_au']}")
+                    costo_unit_ext = st.number_input(f"Costo Base Unitario sin IVA en {moneda_oc}:", min_value=0.0)
+                    costo_cop_base = costo_unit_ext * trm_oc if moneda_oc != "COP" else costo_unit_ext
                     
-                    if st.button("Emitir Orden de Compra"):
+                    subtotal = cant_oc * costo_cop_base
+                    aplica_iva = prod_info.get('aplica_iva', 'SI') == 'SI'
+                    monto_iva = subtotal * 0.19 if aplica_iva else 0.0
+                    costo_total = subtotal + monto_iva
+                    
+                    st.markdown("### 💰 Desglose Financiero O.C.")
+                    st.markdown(f"""
+                    * **Subtotal Base Costo:** ${subtotal:,.2f} COP
+                    * **Monto Impuesto IVA (19%):** ${monto_iva:,.2f} COP
+                    * **COSTO TOTAL FACTURA PROVEEDOR:** `${costo_total:,.2f} COP`
+                    """)
+
+                    st.info(f"📋 **Documento Proveedor:** {prod_info['codigo_proveedor']} - {prod_info['nombre_proveedor']} | **Aplica IVA:** {prod_info['aplica_iva']}")
+                    
+                    if st.button("Emitir Orden de Compra y Generar PDF"):
                         c = conn.cursor()
                         c.execute("INSERT INTO ordenes_compra (numero_oc, proveedor, fecha_creacion) VALUES (%s, %s, %s) RETURNING id", (num_oc, prod_info['proveedor'], datetime.now().strftime("%Y-%m-%d")))
                         oc_id = c.fetchone()['id']
-                        c.execute("INSERT INTO ordenes_compra_items (oc_id, producto_id, cantidad_solicitada, costo_pactado, moneda, trm) VALUES (%s, %s, %s, %s, %s, %s)", (oc_id, prod_oc_id, cant_oc, costo_cop_calc, moneda_oc, trm_oc))
+                        c.execute("""
+                            INSERT INTO ordenes_compra_items (oc_id, producto_id, cantidad_solicitada, costo_pactado, moneda, trm, subtotal, monto_iva, costo_total)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (oc_id, prod_oc_id, cant_oc, costo_cop_base, moneda_oc, trm_oc, subtotal, monto_iva, costo_total))
                         conn.commit()
                         st.success(f"✅ OC {num_oc} emitida correctamente.")
+                        
+                        df_pdf_item = pd.DataFrame([{
+                            'codigo_proveedor': prod_info['codigo_proveedor'],
+                            'nombre_proveedor': prod_info['nombre_proveedor'],
+                            'cantidad_solicitada': cant_oc,
+                            'moneda': moneda_oc,
+                            'costo_pactado': costo_unit_ext,
+                            'subtotal': subtotal,
+                            'monto_iva': monto_iva,
+                            'costo_total': costo_total
+                        }])
+                        pdf_bytes = generar_pdf_orden_compra(num_oc, prod_info['proveedor'], df_pdf_item)
+                        st.download_button("📄 Descargar Orden de Compra (PDF Filtrado Proveedor)", data=pdf_bytes, file_name=f"OC_{num_oc}.pdf", mime="application/pdf")
 
         elif sub_oc == "📦 Recepción de Mercancía en Bodega":
             st.subheader("Entrada de Mercancía a Bodega (Recepción)", anchor=False)
@@ -629,7 +800,12 @@ else:
                 st.warning("⚠️ Modulo de recepción reservado para perfiles Bodega o Administrador.")
             else:
                 try:
-                    df_ocs = pd.read_sql_query("SELECT oc.id, oc.numero_oc, oc.proveedor, i.producto_id, i.cantidad_solicitada, i.costo_pactado, i.moneda, i.trm FROM ordenes_compra oc JOIN ordenes_compra_items i ON oc.id = i.oc_id WHERE oc.estado = 'ABIERTA'", conn)
+                    df_ocs = pd.read_sql_query("""
+                        SELECT oc.id, oc.numero_oc, oc.proveedor, i.producto_id, i.cantidad_solicitada, i.costo_pactado, i.moneda, i.trm, i.subtotal, i.monto_iva, i.costo_total
+                        FROM ordenes_compra oc 
+                        JOIN ordenes_compra_items i ON oc.id = i.oc_id 
+                        WHERE oc.estado = 'ABIERTA'
+                    """, conn)
                 except Exception:
                     df_ocs = pd.DataFrame()
                 
@@ -647,16 +823,18 @@ else:
                         remision = c_rx2.text_input("Documento / Remisión / Factura Proveedor:")
                         
                         st.markdown("---")
-                        st.write("<b>Costo y Conversión TRM Informativa</b>", unsafe_allow_html=True)
+                        st.write("<b>Casillas de Validación Cruzada de Facturación</b>", unsafe_allow_html=True)
                         cm1, cm2, cm3 = st.columns(3)
                         moneda_rx = cm1.selectbox("Moneda Factura:", ["COP", "USD", "EUR"], index=["COP", "USD", "EUR"].index(item_oc['moneda']))
                         trm_rx = cm2.number_input("TRM Aplicada Factura:", value=float(item_oc['trm']))
-                        costo_pactado_val = float(item_oc['costo_pactado'])
-                        trm_val = float(item_oc['trm'])
-                        costo_ext_rx = cm3.number_input(f"Costo Facturado en {moneda_rx}:", value=float(costo_pactado_val / trm_val) if trm_val > 0 else costo_pactado_val)
                         
-                        costo_cop_final = costo_ext_rx * trm_rx if moneda_rx != "COP" else costo_ext_rx
-                        st.success(f"💰 **Costo Final de Entrada a Valoración:** ${costo_cop_final:,.2f} COP / KG")
+                        c_sub, c_iva, c_tot = st.columns(3)
+                        rx_subtotal = c_sub.number_input("Subtotal Costo Facturado ($):", value=float(item_oc['subtotal']))
+                        rx_iva = c_iva.number_input("Monto IVA Facturado ($):", value=float(item_oc['monto_iva']))
+                        rx_total = c_tot.number_input("TOTAL FACTURA PROVEEDOR ($):", value=float(item_oc['costo_total']))
+                        
+                        costo_cop_base_unit = rx_subtotal / cant_rx if cant_rx > 0 else 0.0
+                        st.success(f"💰 **Costo Base Unitario de Entrada a Valoración (sin IVA):** ${costo_cop_base_unit:,.2f} COP / KG")
                         
                         st.markdown("---")
                         lote_prov = st.text_input("Número de Lote del Proveedor:")
@@ -668,7 +846,7 @@ else:
                         obs_rx = st.text_area("Observaciones de Recepción:")
                         
                         if st.form_submit_button("Confirmar Entrada y Actualizar Costo Promedio Móvil"):
-                            registrar_recepcion(int(item_oc['producto_id']), cant_rx, lote_prov, str(fab_date), str(exp_date), costo_cop_final, moneda_rx, trm_rx, costo_ext_rx, remision, obs_rx, st.session_state['username'], oc_id=int(item_oc['id']))
+                            registrar_recepcion(int(item_oc['producto_id']), cant_rx, lote_prov, str(fab_date), str(exp_date), costo_cop_base_unit, moneda_rx, trm_rx, costo_cop_base_unit, remision, obs_rx, st.session_state['username'], oc_id=int(item_oc['id']))
                             st.success("✅ Entrada registrada exitosamente. Costo promedio ponderado móvil actualizado.")
 
     elif menu == "🧪 Kits y Ensambles":
