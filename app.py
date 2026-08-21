@@ -680,6 +680,13 @@ else:
         if rol != "Administrador":
             st.warning("⚠️ Rol limitado: La creación y modificación de productos es función exclusiva del rol **Administrador**.")
         else:
+            # Cargar lista actualizada de proveedores desde la BD
+            try:
+                df_provs_db = cargar_tabla_sql("SELECT nombre FROM proveedores ORDER BY nombre ASC")
+                lista_proveedores = df_provs_db['nombre'].tolist() if not df_provs_db.empty else []
+            except Exception:
+                lista_proveedores = []
+
             with st.form("crear_producto"):
                 st.subheader("Formulario de Creación de Producto AURANZA", anchor=False)
                 c1, c2, c3 = st.columns(3)
@@ -689,7 +696,14 @@ else:
                 
                 c4, c5, c6 = st.columns(3)
                 nombre_prov = c4.text_input("Nombre en Proveedor (ej: BAMBOO):")
-                proveedor = c5.text_input("Nombre del Proveedor:")
+                
+                # REQUERIMIENTO: Nombre del Proveedor en Lista Desplegable
+                if lista_proveedores:
+                    proveedor = c5.selectbox("Nombre del Proveedor:", lista_proveedores)
+                else:
+                    proveedor = c5.selectbox("Nombre del Proveedor:", ["-- No hay proveedores creados --"])
+                    st.caption("⚠️ Primero debes crear un proveedor en el menú '🏢 Directorio de Proveedores'.")
+
                 bodega_id = c6.selectbox("Bodega Principal Asignada:", [1, 2, 3, 4], format_func=lambda x: ["FINE", "INDUSTRIAL", "MATERIAS PRIMAS", "ENVASES Y DEMÁS"][x-1])
                 
                 c7, c8, c9 = st.columns(3)
@@ -706,17 +720,20 @@ else:
                 
                 btn_crear = st.form_submit_button("Guardar Producto")
                 if btn_crear:
-                    try:
-                        c = conn.cursor()
-                        c.execute("""
-                            INSERT INTO productos (codigo_au, codigo_proveedor, nombre_au, nombre_proveedor, proveedor, categoria, linea, bodega_id, precio_venta, punto_pedido, nivel_minimo, nivel_maximo, aplica_iva)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """, (codigo_au, codigo_prov, nombre_au, nombre_prov, proveedor, categoria, linea, bodega_id, precio_vta, pt_pedido, nv_min, nv_max, aplica_iva))
-                        conn.commit()
-                        st.cache_data.clear()
-                        st.success(f"✅ Producto {codigo_au} - {nombre_au} creado exitosamente con IVA: {aplica_iva}")
-                    except Exception as e:
-                        st.error(f"Error al crear producto: {e}")
+                    if not lista_proveedores or proveedor == "-- No hay proveedores creados --":
+                        st.error("❌ Debes seleccionar un proveedor válido antes de crear el producto.")
+                    else:
+                        try:
+                            c = conn.cursor()
+                            c.execute("""
+                                INSERT INTO productos (codigo_au, codigo_proveedor, nombre_au, nombre_proveedor, proveedor, categoria, linea, bodega_id, precio_venta, punto_pedido, nivel_minimo, nivel_maximo, aplica_iva)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """, (codigo_au, codigo_prov, nombre_au, nombre_prov, proveedor, categoria, linea, bodega_id, precio_vta, pt_pedido, nv_min, nv_max, aplica_iva))
+                            conn.commit()
+                            st.cache_data.clear()
+                            st.success(f"✅ Producto {codigo_au} - {nombre_au} creado exitosamente con IVA: {aplica_iva}")
+                        except Exception as e:
+                            st.error(f"Error al crear producto: {e}")
 
         st.subheader("Inventario Consolidado por Productos", anchor=False)
         try:
