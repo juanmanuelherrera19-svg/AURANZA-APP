@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="pandas")
+
 import streamlit as st
 import psycopg2
 import psycopg2.extras
@@ -23,7 +26,6 @@ def check_hashes(password, hashed_text):
         return hashed_text
     return False
 
-# OPTIMIZACIÓN: Conexión persistente mediante cache_resource
 @st.cache_resource
 def get_connection():
     conn = psycopg2.connect(
@@ -41,7 +43,6 @@ def init_db():
     cursor = conn.cursor()
     
     try:
-        # Tabla de Usuarios
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS usuarios (
             id SERIAL PRIMARY KEY,
@@ -61,6 +62,16 @@ def init_db():
             id SERIAL PRIMARY KEY,
             nombre VARCHAR(150) UNIQUE NOT NULL,
             nit VARCHAR(50),
+            contacto TEXT,
+            telefono VARCHAR(50),
+            email VARCHAR(100)
+        )""")
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS clientes (
+            id SERIAL PRIMARY KEY,
+            razon_social VARCHAR(150) UNIQUE NOT NULL,
+            identificacion VARCHAR(50) UNIQUE NOT NULL,
             contacto TEXT,
             telefono VARCHAR(50),
             email VARCHAR(100)
@@ -90,18 +101,7 @@ def init_db():
             comp_requisicion NUMERIC DEFAULT 0.0,
             aplica_iva VARCHAR(2) DEFAULT 'SI'
         )""")
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-
-    # Migración en caliente protegida por rollback en caso de fallo
-    try:
-        cursor.execute("ALTER TABLE productos ADD COLUMN IF NOT EXISTS aplica_iva VARCHAR(2) DEFAULT 'SI';")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-    
-    try:
+        
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS lotes (
             id SERIAL PRIMARY KEY,
@@ -145,7 +145,7 @@ def init_db():
             id SERIAL PRIMARY KEY,
             numero_pedido VARCHAR(100) UNIQUE NOT NULL,
             cliente TEXT NOT NULL,
-            producto_id INTEGER NOT NULL REFERENCES productos(id),
+            producto_id INTEGER,
             cantidad_solicitada NUMERIC NOT NULL,
             precio_unitario NUMERIC NOT NULL,
             vendedor TEXT NOT NULL,
@@ -160,7 +160,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS kits (
             id SERIAL PRIMARY KEY,
             codigo_kit VARCHAR(100) UNIQUE NOT NULL,
-            nombre_kit TEXT NOT NULL
+            nombre_kit TEXT NOT NULL,
+            precio_venta NUMERIC DEFAULT 0.0
         )""")
 
         cursor.execute("""
@@ -175,8 +176,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS kardex (
             id SERIAL PRIMARY KEY,
             fecha TEXT NOT NULL,
-            producto_id INTEGER NOT NULL REFERENCES productos(id),
-            bodega_id INTEGER NOT NULL REFERENCES bodegas(id),
+            producto_id INTEGER REFERENCES productos(id),
+            bodega_id INTEGER REFERENCES bodegas(id),
             tipo_movimiento VARCHAR(50) NOT NULL,
             cantidad NUMERIC NOT NULL,
             costo_unitario NUMERIC NOT NULL,
@@ -198,9 +199,12 @@ def init_db():
         for b in bodegas:
             cursor.execute("INSERT INTO bodegas (nombre) VALUES (%s) ON CONFLICT (nombre) DO NOTHING", (b,))
 
+        cursor.execute("ALTER TABLE productos ADD COLUMN IF NOT EXISTS aplica_iva VARCHAR(2) DEFAULT 'SI';")
         conn.commit()
     except Exception as e:
         conn.rollback()
+    finally:
+        cursor.close()
 
 init_db()
 
@@ -211,31 +215,32 @@ def login_user(username, password):
     conn = get_connection()
     c = conn.cursor()
     c.execute('SELECT * FROM usuarios WHERE username = %s AND password = %s', (username, make_hashes(password)))
-    data = c.fetchone()
-    return data
+    user = c.fetchone()
+    c.close()
+    return user
 
 def update_password(username, new_password):
     conn = get_connection()
     c = conn.cursor()
     c.execute('UPDATE usuarios SET password = %s WHERE username = %s', (make_hashes(new_password), username))
     conn.commit()
-    st.cache_data.clear() # Limpia caché por seguridad
+    c.close()
+    st.cache_data.clear()
 
 def calcular_costo_promedio_movil(existencia_actual, costo_prom_actual, cant_nueva, costo_nuevo_cop):
     if existencia_actual <= 0:
         return costo_nuevo_cop
     return ((existencia_actual * costo_prom_actual) + (cant_nueva * costo_nuevo_cop)) / (existencia_actual + cant_nueva)
 
-# OPTIMIZACIÓN: Caché de lectura para existencia
 @st.cache_data
 def obtener_existencia_producto(producto_id):
     conn = get_connection()
     c = conn.cursor()
     c.execute("SELECT SUM(cantidad_actual) as total FROM lotes WHERE producto_id = %s", (producto_id,))
     res = c.fetchone()['total']
+    c.close()
     return float(res) if res else 0.0
 
-# OPTIMIZACIÓN: Caché de lectura para OC pendientes
 @st.cache_data
 def obtener_oc_pendientes(producto_id):
     conn = get_connection()
@@ -247,6 +252,7 @@ def obtener_oc_pendientes(producto_id):
         WHERE i.producto_id = %s AND oc.estado = 'ABIERTA'
     """, (producto_id,))
     res = c.fetchone()['oc_cant']
+    c.close()
     return float(res) if res else 0.0
 
 def registrar_recepcion(producto_id, cantidad, lote_prov, fab_date, exp_date, costo_cop_base, moneda, trm, costo_ext, remision, obs, usuario, oc_id=None):
@@ -283,66 +289,33 @@ def registrar_recepcion(producto_id, cantidad, lote_prov, fab_date, exp_date, co
         c.execute("UPDATE ordenes_compra SET estado = 'RECIBIDA' WHERE id = %s", (oc_id,))
         
     conn.commit()
-    st.cache_data.clear() # Limpia caché para reflejar los datos actualizados
+    c.close()
+    st.cache_data.clear()
 
-def registrar_pedido_venta(num_ped, cliente, producto_id, cantidad, precio, vendedor, subtotal, monto_iva, total):
+def registrar_pedido_venta(num_ped, cliente, kit_id, cantidad, precio, vendedor, subtotal, monto_iva, total):
     conn = get_connection()
     c = conn.cursor()
-    
     fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     c.execute("""
         INSERT INTO pedidos_venta (numero_pedido, cliente, producto_id, cantidad_solicitada, precio_unitario, vendedor, fecha_pedido, estado, subtotal, monto_iva, precio_total)
         VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDIENTE', %s, %s, %s)
-    """, (num_ped, cliente, producto_id, cantidad, precio, vendedor, fecha_hoy, subtotal, monto_iva, total))
-    
-    c.execute("UPDATE productos SET comp_venta = comp_venta + %s WHERE id = %s", (cantidad, producto_id))
+    """, (num_ped, cliente, kit_id, cantidad, precio, vendedor, fecha_hoy, subtotal, monto_iva, total))
     conn.commit()
+    c.close()
     st.cache_data.clear()
 
 def despachar_pedido_venta(pedido_id, usuario_despacha):
     conn = get_connection()
     c = conn.cursor()
-    
     c.execute("SELECT * FROM pedidos_venta WHERE id = %s", (pedido_id,))
     ped = c.fetchone()
     if not ped or ped['estado'] != 'PENDIENTE':
+        c.close()
         return False, "El pedido ya fue procesado o no existe."
     
-    producto_id = ped['producto_id']
-    cant_requerida = float(ped['cantidad_solicitada'])
-    fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    c.execute("SELECT * FROM productos WHERE id = %s", (producto_id,))
-    prod = c.fetchone()
-    
-    c.execute("SELECT * FROM lotes WHERE producto_id = %s AND cantidad_actual > 0 ORDER BY id ASC", (producto_id,))
-    lotes = c.fetchall()
-    
-    cant_descontada = 0.0
-    for l in lotes:
-        if cant_descontada >= cant_requerida:
-            break
-        
-        l_cant = float(l['cantidad_actual'])
-        faltante = cant_requerida - cant_descontada
-        if l_cant <= faltante:
-            tomar = l_cant
-            c.execute("UPDATE lotes SET cantidad_actual = 0 WHERE id = %s", (l['id'],))
-        else:
-            tomar = faltante
-            c.execute("UPDATE lotes SET cantidad_actual = cantidad_actual - %s WHERE id = %s", (tomar, l['id']))
-            
-        cant_descontada += tomar
-        
-        c.execute("""
-            INSERT INTO kardex (fecha, producto_id, bodega_id, tipo_movimiento, cantidad, costo_unitario, usuario, motivo, lote, documento_ref)
-            VALUES (%s, %s, %s, 'SALIDA', %s, %s, %s, %s, %s, %s)
-        """, (fecha_hoy, producto_id, prod['bodega_id'], tomar, prod['costo_promedio'], usuario_despacha, f"Despacho Pedido {ped['numero_pedido']} - Cliente: {ped['cliente']}", l['lote_proveedor'], ped['numero_pedido']))
-
-    c.execute("UPDATE productos SET comp_venta = GREATEST(0.0, comp_venta - %s) WHERE id = %s", (cant_requerida, producto_id))
     c.execute("UPDATE pedidos_venta SET estado = 'DESPACHADO' WHERE id = %s", (pedido_id,))
-    
     conn.commit()
+    c.close()
     st.cache_data.clear()
     return True, "Despacho realizado con éxito."
 
@@ -353,11 +326,7 @@ def generar_pdf_orden_compra(num_oc, proveedor, items_df):
     
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
-        'TitleStyle',
-        parent=styles['Heading1'],
-        fontSize=16,
-        textColor=colors.HexColor('#000080'),
-        spaceAfter=10
+        'TitleStyle', parent=styles['Heading1'], fontSize=16, textColor=colors.HexColor('#000080'), spaceAfter=10
     )
     
     story.append(Paragraph("<b>ORDEN DE COMPRA OFICIAL</b>", title_style))
@@ -367,29 +336,17 @@ def generar_pdf_orden_compra(num_oc, proveedor, items_df):
     story.append(Spacer(1, 15))
     
     data = [["Cód. Proveedor", "Descripción Proveedor", "Cant.", "Moneda", "P. Unitario", "Subtotal", "IVA", "Total"]]
-    
-    subtotal_gral = 0.0
-    iva_gral = 0.0
-    total_gral = 0.0
+    subtotal_gral, iva_gral, total_gral = 0.0, 0.0, 0.0
     
     for idx, row in items_df.iterrows():
-        sub = float(row['subtotal'])
-        iva = float(row['monto_iva'])
-        tot = float(row['costo_total'])
-        
+        sub, iva, tot = float(row['subtotal']), float(row['monto_iva']), float(row['costo_total'])
         subtotal_gral += sub
         iva_gral += iva
         total_gral += tot
         
         data.append([
-            str(row['codigo_proveedor']),
-            str(row['nombre_proveedor']),
-            f"{float(row['cantidad_solicitada']):,.2f}",
-            str(row['moneda']),
-            f"${float(row['costo_pactado']):,.2f}",
-            f"${sub:,.2f}",
-            f"${iva:,.2f}",
-            f"${tot:,.2f}"
+            str(row['codigo_proveedor']), str(row['nombre_proveedor']), f"{float(row['cantidad_solicitada']):,.2f}",
+            str(row['moneda']), f"${float(row['costo_pactado']):,.2f}", f"${sub:,.2f}", f"${iva:,.2f}", f"${tot:,.2f}"
         ])
         
     t = Table(data)
@@ -413,13 +370,10 @@ def generar_pdf_orden_compra(num_oc, proveedor, items_df):
     buffer.seek(0)
     return buffer
 
-# ==========================================
-# FUNCIONES AUXILIARES CON CACHÉ DE DATOS (MÁXIMA VELOCIDAD)
-# ==========================================
 @st.cache_data
-def cargar_tabla_sql(query):
+def cargar_tabla_sql(query, params=None):
     conn = get_connection()
-    return pd.read_sql_query(query, conn)
+    return pd.read_sql_query(query, conn, params=params)
 
 # ==========================================
 # CONTROL DE SESIÓN Y LOGIN
@@ -464,9 +418,10 @@ else:
     st.sidebar.write("Navegación Módulos:")
 
     menu = st.sidebar.radio(
-        "",
+        "Navegación Módulos",
         [
             "📊 Ficha de Producto",
+            "👤 Directorio de Clientes",
             "🛒 Pedidos y Cotizaciones",
             "📦 Maestro de Productos y Lotes",
             "🏢 Directorio de Proveedores",
@@ -475,7 +430,8 @@ else:
             "🚨 Requerimiento Comercial (MRP)",
             "📜 Kardex e Historial",
             "⚙️ Mi Cuenta y Configuración"
-        ]
+        ],
+        label_visibility="collapsed"
     )
 
     conn = get_connection()
@@ -484,9 +440,9 @@ else:
     @st.cache_data
     def obtener_notificacion_pedidos():
         q_pend = """
-            SELECT p.numero_pedido, p.cliente, pr.nombre_au, p.cantidad_solicitada, p.vendedor 
+            SELECT p.numero_pedido, p.cliente, k.nombre_kit, p.cantidad_solicitada, p.vendedor 
             FROM pedidos_venta p 
-            JOIN productos pr ON p.producto_id = pr.id 
+            LEFT JOIN kits k ON p.producto_id = k.id 
             WHERE p.estado = 'PENDIENTE'
         """
         return cargar_tabla_sql(q_pend)
@@ -496,7 +452,7 @@ else:
         if not df_p_pend.empty:
             st.warning(f"🚨 **NOTIFICACIÓN GLOBAL:** Hay **{len(df_p_pend)} Pedido(s) de Venta PENDIENTE(S)** por despachar / facturar.")
             with st.expander("Ver lista de pedidos pendientes por despachar"):
-                st.dataframe(df_p_pend, use_container_width=True)
+                st.dataframe(df_p_pend, width="stretch")
     except Exception:
         pass
 
@@ -539,6 +495,7 @@ else:
                 c.execute("SELECT SUM(cantidad) as sal FROM kardex WHERE producto_id = %s AND tipo_movimiento IN ('SALIDA', 'ENSAMBLE', 'MERMA')", (prod_sel_id,))
                 r_sal = c.fetchone()['sal']
                 tot_salidas = float(r_sal) if r_sal else 0.0
+                c.close()
 
                 comp_venta = float(p['comp_venta']) if p['comp_venta'] else 0.0
                 comp_op = float(p['comp_op']) if p['comp_op'] else 0.0
@@ -574,12 +531,51 @@ else:
                 """, unsafe_allow_html=True)
                 
                 st.subheader("📦 Trazabilidad por Lotes Activos")
-                df_lotes = cargar_tabla_sql(f"SELECT lote_proveedor, cantidad_actual, fecha_fabricacion, fecha_vencimiento, costo_unitario, remision_factura, observaciones FROM lotes WHERE producto_id = {prod_sel_id} AND cantidad_actual > 0")
-                st.dataframe(df_lotes, use_container_width=True)
+                df_lotes = cargar_tabla_sql("SELECT lote_proveedor, cantidad_actual, fecha_fabricacion, fecha_vencimiento, costo_unitario, remision_factura, observaciones FROM lotes WHERE producto_id = %s AND cantidad_actual > 0", params=(prod_sel_id,))
+                st.dataframe(df_lotes, width="stretch")
             else:
                 st.info("👆 Por favor seleccione un producto del desplegable arriba para visualizar su ficha técnica e inventarios.")
         else:
             st.warning("⚠️ No se encontraron productos registrados.")
+
+    elif menu == "👤 Directorio de Clientes":
+        st.title("👤 Gestión y Registro de Clientes", anchor=False)
+        
+        with st.expander("➕ Registrar Nuevo Cliente", expanded=True):
+            with st.form("form_crear_cliente", clear_on_submit=True):
+                c_cl1, c_cl2 = st.columns(2)
+                razon_social = c_cl1.text_input("Nombre o Razón Social:")
+                identificacion = c_cl2.text_input("Cédula o NIT:")
+                
+                c_cl3, c_cl4, c_cl5 = st.columns(3)
+                contacto = c_cl3.text_input("Contacto:")
+                telefono = c_cl4.text_input("Teléfono:")
+                email = c_cl5.text_input("Email:")
+                
+                if st.form_submit_button("Guardar Cliente"):
+                    if not razon_social or not identificacion:
+                        st.error("❌ Los campos Razón Social e Identificación (NIT/Cédula) son obligatorios.")
+                    else:
+                        try:
+                            c = conn.cursor()
+                            c.execute("""
+                                INSERT INTO clientes (razon_social, identificacion, contacto, telefono, email)
+                                VALUES (%s, %s, %s, %s, %s)
+                            """, (razon_social, identificacion, contacto, telefono, email))
+                            conn.commit()
+                            c.close()
+                            st.cache_data.clear()
+                            st.success(f"✅ Cliente '{razon_social}' registrado con éxito.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error al registrar cliente: {e}")
+
+        st.subheader("Listado de Clientes Registrados", anchor=False)
+        try:
+            df_clientes = cargar_tabla_sql("SELECT razon_social, identificacion, contacto, telefono, email FROM clientes ORDER BY razon_social ASC")
+            st.dataframe(df_clientes, width="stretch")
+        except Exception:
+            st.info("Aún no hay clientes registrados.")
 
     elif menu == "🛒 Pedidos y Cotizaciones":
         st.title("🛒 Módulo de Pedidos de Venta, Cotizaciones y Despachos")
@@ -592,30 +588,47 @@ else:
                 st.warning("⚠️ Perfil sin autorización para montar pedidos de venta.")
             else:
                 try:
-                    df_prods_vta = cargar_tabla_sql("SELECT id, codigo_au, nombre_au, precio_venta, aplica_iva FROM productos")
+                    df_cli = cargar_tabla_sql("SELECT id, razon_social, identificacion FROM clientes ORDER BY razon_social ASC")
                 except Exception:
-                    df_prods_vta = pd.DataFrame()
+                    df_cli = pd.DataFrame()
+
+                try:
+                    df_kits_vta = cargar_tabla_sql("SELECT id, codigo_kit, nombre_kit, precio_venta FROM kits ORDER BY nombre_kit ASC")
+                except Exception:
+                    df_kits_vta = pd.DataFrame()
                 
-                if df_prods_vta.empty:
-                    st.warning("⚠️ No hay productos registrados para vender.")
+                if df_cli.empty:
+                    st.warning("⚠️ Debe registrar al menos un cliente en el menú '👤 Directorio de Clientes' antes de realizar un pedido.")
+                elif df_kits_vta.empty:
+                    st.warning("⚠️ No hay Kits o Ensambles creados en la base de datos. Vaya al menú '🧪 Kits y Ensambles'.")
                 else:
-                    with st.form("form_nuevo_pedido"):
+                    with st.form("form_nuevo_pedido", clear_on_submit=True):
                         c_p1, c_p2 = st.columns(2)
                         num_ped = c_p1.text_input("Número / Código de Pedido (ej: PED-001):")
-                        cliente = c_p2.text_input("Nombre del Cliente:")
                         
-                        prod_ped_id = st.selectbox("Producto / Ensamble a Vender:", df_prods_vta['id'].tolist(), format_func=lambda x: f"{df_prods_vta[df_prods_vta['id']==x]['codigo_au'].values[0]} - {df_prods_vta[df_prods_vta['id']==x]['nombre_au'].values[0]}")
+                        cliente_sel_id = c_p2.selectbox(
+                            "Buscar / Seleccionar Cliente (Escriba Inicial, Nombre o NIT):",
+                            df_cli['id'].tolist(),
+                            format_func=lambda x: f"{df_cli[df_cli['id']==x]['razon_social'].values[0]} | NIT/CC: {df_cli[df_cli['id']==x]['identificacion'].values[0]}"
+                        )
                         
-                        p_sel_info = df_prods_vta[df_prods_vta['id']==prod_ped_id].iloc[0]
-                        stock_disp = obtener_existencia_producto(prod_ped_id)
+                        cli_info = df_cli[df_cli['id'] == cliente_sel_id].iloc[0]
+                        st.text_input("Identificación Cliente (Sincronizado Aut.):", value=cli_info['identificacion'], disabled=True)
+
+                        kit_ped_id = st.selectbox(
+                            "Producto / Ensamble a Vender (Búsqueda por Nombre o Código Kit):",
+                            df_kits_vta['id'].tolist(),
+                            format_func=lambda x: f"{df_kits_vta[df_kits_vta['id']==x]['codigo_kit'].values[0]} - {df_kits_vta[df_kits_vta['id']==x]['nombre_kit'].values[0]}"
+                        )
+                        
+                        k_sel_info = df_kits_vta[df_kits_vta['id'] == kit_ped_id].iloc[0]
                         
                         c_p3, c_p4 = st.columns(2)
                         cant_ped = c_p3.number_input("Cantidad Requerida (KG/Unidades):", min_value=0.1, value=10.0)
-                        precio_ped_base = c_p4.number_input("Precio Base Unitario ($ COP sin IVA):", value=float(p_sel_info['precio_venta']) if p_sel_info['precio_venta'] else 0.0)
+                        precio_ped_base = c_p4.number_input("Precio Base Unitario ($ COP sin IVA):", value=float(k_sel_info['precio_venta']) if k_sel_info['precio_venta'] else 0.0)
                         
                         subtotal = cant_ped * precio_ped_base
-                        aplica_iva = p_sel_info.get('aplica_iva', 'SI') == 'SI'
-                        monto_iva = subtotal * 0.19 if aplica_iva else 0.0
+                        monto_iva = subtotal * 0.19
                         total_pedido = subtotal + monto_iva
                         
                         st.markdown(f"""
@@ -624,15 +637,16 @@ else:
                         * **TOTAL PEDIDO / COTIZACIÓN:** `${total_pedido:,.2f} COP`
                         """)
                         
-                        st.info(f"📊 **Stock Físico Actual:** {stock_disp:,.2f} KG")
-                        
-                        if st.form_submit_button("Guardar y Comprometer Inventario"):
-                            if not num_ped or not cliente:
-                                st.error("❌ Indique el número de pedido y el cliente.")
+                        if st.form_submit_button("Guardar y Registrar Pedido"):
+                            if not num_ped:
+                                st.error("❌ Indique el número de pedido.")
                             else:
                                 try:
-                                    registrar_pedido_venta(num_ped, cliente, prod_ped_id, cant_ped, precio_ped_base, st.session_state['username'], subtotal, monto_iva, total_pedido)
-                                    st.success(f"✅ Pedido {num_ped} registrado. Se sumó {cant_ped} KG a Comprometido en Venta.")
+                                    registrar_pedido_venta(
+                                        num_ped, cli_info['razon_social'], kit_ped_id, cant_ped, 
+                                        precio_ped_base, st.session_state['username'], subtotal, monto_iva, total_pedido
+                                    )
+                                    st.success(f"✅ Pedido {num_ped} para {cli_info['razon_social']} registrado exitosamente.")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Error al registrar pedido: {e}")
@@ -641,17 +655,16 @@ else:
             st.subheader("Despacho e Impacto en Inventario / Kardex", anchor=False)
             try:
                 df_pedidos = cargar_tabla_sql("""
-                    SELECT p.id, p.numero_pedido, p.cliente, pr.codigo_au, pr.nombre_au, p.cantidad_solicitada, p.precio_unitario, p.subtotal, p.monto_iva, p.precio_total, p.vendedor, p.fecha_pedido, p.estado
+                    SELECT p.id, p.numero_pedido, p.cliente, k.codigo_kit, k.nombre_kit, p.cantidad_solicitada, p.precio_unitario, p.subtotal, p.monto_iva, p.precio_total, p.vendedor, p.fecha_pedido, p.estado
                     FROM pedidos_venta p
-                    JOIN productos pr ON p.producto_id = pr.id
+                    LEFT JOIN kits k ON p.producto_id = k.id
                     ORDER BY p.id DESC
                 """)
                 
                 if df_pedidos.empty:
                     st.info("No hay pedidos de venta registrados.")
                 else:
-                    st.dataframe(df_pedidos, use_container_width=True)
-                    
+                    st.dataframe(df_pedidos, width="stretch")
                     st.markdown("---")
                     st.subheader("Ejecutar Despacho Físico (Bodega / Admin)")
                     pedidos_pendientes = df_pedidos[df_pedidos['estado'] == 'PENDIENTE']
@@ -659,7 +672,7 @@ else:
                     if pedidos_pendientes.empty:
                         st.success("✨ Todos los pedidos están despachados al día.")
                     else:
-                        ped_to_desp = st.selectbox("Seleccionar Pedido Pendiente por Despachar:", pedidos_pendientes['id'].tolist(), format_func=lambda x: f"Pedido {pedidos_pendientes[pedidos_pendientes['id']==x]['numero_pedido'].values[0]} - Cliente: {pedidos_pendientes[pedidos_pendientes['id']==x]['cliente'].values[0]} ({pedidos_pendientes[pedidos_pendientes['id']==x]['cantidad_solicitada'].values[0]} KG)")
+                        ped_to_desp = st.selectbox("Seleccionar Pedido Pendiente por Despachar:", pedidos_pendientes['id'].tolist(), format_func=lambda x: f"Pedido {pedidos_pendientes[pedidos_pendientes['id']==x]['numero_pedido'].values[0]} - Cliente: {pedidos_pendientes[pedidos_pendientes['id']==x]['cliente'].values[0]}")
                         
                         if st.button("🚀 Confirmar Despacho Físico y Facturar"):
                             if rol not in ["Administrador", "Bodega"]:
@@ -680,14 +693,13 @@ else:
         if rol != "Administrador":
             st.warning("⚠️ Rol limitado: La creación y modificación de productos es función exclusiva del rol **Administrador**.")
         else:
-            # Cargar lista actualizada de proveedores desde la BD
             try:
                 df_provs_db = cargar_tabla_sql("SELECT nombre FROM proveedores ORDER BY nombre ASC")
                 lista_proveedores = df_provs_db['nombre'].tolist() if not df_provs_db.empty else []
             except Exception:
                 lista_proveedores = []
 
-            with st.form("crear_producto"):
+            with st.form("crear_producto", clear_on_submit=True):
                 st.subheader("Formulario de Creación de Producto AURANZA", anchor=False)
                 c1, c2, c3 = st.columns(3)
                 codigo_au = c1.text_input("Código AU Interno (ej: AUH0001):")
@@ -697,12 +709,10 @@ else:
                 c4, c5, c6 = st.columns(3)
                 nombre_prov = c4.text_input("Nombre en Proveedor (ej: BAMBOO):")
                 
-                # REQUERIMIENTO: Nombre del Proveedor en Lista Desplegable
                 if lista_proveedores:
                     proveedor = c5.selectbox("Nombre del Proveedor:", lista_proveedores)
                 else:
                     proveedor = c5.selectbox("Nombre del Proveedor:", ["-- No hay proveedores creados --"])
-                    st.caption("⚠️ Primero debes crear un proveedor en el menú '🏢 Directorio de Proveedores'.")
 
                 bodega_id = c6.selectbox("Bodega Principal Asignada:", [1, 2, 3, 4], format_func=lambda x: ["FINE", "INDUSTRIAL", "MATERIAS PRIMAS", "ENVASES Y DEMÁS"][x-1])
                 
@@ -715,7 +725,6 @@ else:
                 pt_pedido = c10.number_input("Punto de Pedido:", min_value=0.0)
                 nv_min = c11.number_input("Nivel Mínimo:", min_value=0.0)
                 nv_max = c12.number_input("Nivel Máximo:", min_value=0.0)
-                
                 aplica_iva = c13.selectbox("Aplica IVA (19%):", ["SI", "NO"], index=0)
                 
                 btn_crear = st.form_submit_button("Guardar Producto")
@@ -730,15 +739,17 @@ else:
                                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """, (codigo_au, codigo_prov, nombre_au, nombre_prov, proveedor, categoria, linea, bodega_id, precio_vta, pt_pedido, nv_min, nv_max, aplica_iva))
                             conn.commit()
+                            c.close()
                             st.cache_data.clear()
                             st.success(f"✅ Producto {codigo_au} - {nombre_au} creado exitosamente con IVA: {aplica_iva}")
+                            st.rerun()
                         except Exception as e:
                             st.error(f"Error al crear producto: {e}")
 
         st.subheader("Inventario Consolidado por Productos", anchor=False)
         try:
             df_prods_all = cargar_tabla_sql("SELECT p.codigo_au, p.codigo_proveedor, p.nombre_au, p.proveedor, b.nombre as bodega, p.costo_promedio, p.ultimo_costo, p.precio_venta, p.aplica_iva FROM productos p JOIN bodegas b ON p.bodega_id = b.id")
-            st.dataframe(df_prods_all, use_container_width=True)
+            st.dataframe(df_prods_all, width="stretch")
         except Exception:
             st.info("Aún no hay productos registrados.")
 
@@ -747,7 +758,7 @@ else:
         
         if rol == "Administrador":
             with st.expander("➕ Registrar Nuevo Proveedor"):
-                with st.form("form_proveedor"):
+                with st.form("form_proveedor", clear_on_submit=True):
                     c_pr1, c_pr2 = st.columns(2)
                     nom_prov = c_pr1.text_input("Nombre / Razon Social:")
                     nit_prov = c_pr2.text_input("NIT / Documento:")
@@ -765,21 +776,22 @@ else:
                                 c = conn.cursor()
                                 c.execute("INSERT INTO proveedores (nombre, nit, contacto, telefono, email) VALUES (%s, %s, %s, %s, %s)", (nom_prov, nit_prov, contacto_prov, tel_prov, email_prov))
                                 conn.commit()
+                                c.close()
                                 st.cache_data.clear()
                                 st.success(f"✅ Proveedor {nom_prov} registrado correctamente.")
+                                st.rerun()
                             except Exception as e:
                                 st.error(f"Error al guardar proveedor: {e}")
 
         st.subheader("Listado de Proveedores Registrados", anchor=False)
         try:
             df_provs = cargar_tabla_sql("SELECT nombre, nit, contacto, telefono, email FROM proveedores")
-            st.dataframe(df_provs, use_container_width=True)
+            st.dataframe(df_provs, width="stretch")
         except Exception:
             st.info("Aún no hay proveedores registrados.")
 
     elif menu == "🧾 Órdenes de Compra y Recepción":
         st.title("🧾 Gestión de Compras y Recepciones", anchor=False)
-        
         sub_oc = st.radio("Acción a realizar:", ["Emitir Órden de Compra (OC)", "📦 Recepción de Mercancía en Bodega"], horizontal=True)
 
         if sub_oc == "Emitir Órden de Compra (OC)":
@@ -831,6 +843,7 @@ else:
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """, (oc_id, prod_oc_id, cant_oc, costo_cop_base, moneda_oc, trm_oc, subtotal, monto_iva, costo_total))
                         conn.commit()
+                        c.close()
                         st.cache_data.clear()
                         st.success(f"✅ OC {num_oc} emitida correctamente.")
                         
@@ -868,7 +881,7 @@ else:
                     oc_sel = st.selectbox("Seleccionar OC por Recibir:", df_ocs['id'].tolist(), format_func=lambda x: f"OC: {df_ocs[df_ocs['id']==x]['numero_oc'].values[0]} - Prov: {df_ocs[df_ocs['id']==x]['proveedor'].values[0]}")
                     item_oc = df_ocs[df_ocs['id']==oc_sel].iloc[0]
                     
-                    with st.form("form_rx"):
+                    with st.form("form_rx", clear_on_submit=True):
                         st.write(f"Recibiendo producto ID: {item_oc['producto_id']} | Cantidad solicitada: {item_oc['cantidad_solicitada']} KG")
                         
                         c_rx1, c_rx2 = st.columns(2)
@@ -877,7 +890,7 @@ else:
                         
                         st.markdown("---")
                         st.write("<b>Casillas de Validación Cruzada de Facturación</b>", unsafe_allow_html=True)
-                        cm1, cm2, cm3 = st.columns(3)
+                        cm1, cm2 = st.columns(2)
                         moneda_rx = cm1.selectbox("Moneda Factura:", ["COP", "USD", "EUR"], index=["COP", "USD", "EUR"].index(item_oc['moneda']))
                         trm_rx = cm2.number_input("TRM Aplicada Factura:", value=float(item_oc['trm']))
                         
@@ -901,11 +914,12 @@ else:
                         if st.form_submit_button("Confirmar Entrada y Actualizar Costo Promedio Móvil"):
                             registrar_recepcion(int(item_oc['producto_id']), cant_rx, lote_prov, str(fab_date), str(exp_date), costo_cop_base_unit, moneda_rx, trm_rx, costo_cop_base_unit, remision, obs_rx, st.session_state['username'], oc_id=int(item_oc['id']))
                             st.success("✅ Entrada registrada exitosamente. Costo promedio ponderado móvil actualizado.")
+                            st.rerun()
 
     elif menu == "🧪 Kits y Ensambles":
         st.title("🧪 Creación y Ensamble de Kits", anchor=False)
-        
         st.subheader("Fórmulas de Ensamble y Costo Teórico Actualizado", anchor=False)
+        
         try:
             df_prods = cargar_tabla_sql("SELECT id, codigo_au, nombre_au, costo_promedio FROM productos")
         except Exception:
@@ -915,50 +929,90 @@ else:
             st.warning("⚠️ Debe registrar productos en 'Maestro de Productos y Lotes' para armar fórmulas.")
         else:
             if rol == "Administrador":
-                with st.expander("➕ Crear / Configurar Fórmula de Kit"):
+                with st.expander("➕ Crear / Configurar Fórmula de Kit", expanded=True):
                     cod_kit = st.text_input("Código del Kit / Producto Final (ej: AU0010):")
                     nom_kit = st.text_input("Nombre Comercial Kit (ej: FRAGANCIA BAMBU 1KG):")
+                    precio_vta_kit = st.number_input("Precio de Venta Base del Kit ($ COP):", min_value=0.0)
                     
                     st.write("Seleccione Componentes Químicos (Base para 1 KG):")
-                    comp1 = st.selectbox("Componente 1:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_au'].values[0]} - {df_prods[df_prods['id']==x]['nombre_au'].values[0]}")
-                    prop1 = st.number_input("Cantidad Componente 1 (KG):", value=0.6)
-                    
-                    comp2 = st.selectbox("Componente 2:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_au'].values[0]} - {df_prods[df_prods['id']==x]['nombre_au'].values[0]}")
-                    prop2 = st.number_input("Cantidad Componente 2 (KG):", value=0.3)
 
-                    comp3 = st.selectbox("Componente 3:", df_prods['id'].tolist(), format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_au'].values[0]} - {df_prods[df_prods['id']==x]['nombre_au'].values[0]}")
-                    prop3 = st.number_input("Cantidad Componente 3 (KG):", value=0.1)
+                    prod_map = {row['id']: f"{row['codigo_au']} - {row['nombre_au']}" for _, row in df_prods.iterrows()}
+                    todos_los_ids = list(prod_map.keys())
+
+                    ids_comp1 = [p_id for p_id in todos_los_ids if p_id not in [st.session_state.get('c2'), st.session_state.get('c3')]]
+                    comp1 = st.selectbox(
+                        "Componente 1:", 
+                        options=ids_comp1, 
+                        index=None, 
+                        placeholder="Escriba o seleccione un componente...", 
+                        format_func=lambda x: prod_map[x],
+                        key='c1'
+                    )
+                    prop1 = st.number_input("Cantidad Componente 1 (KG):", min_value=0.0, value=0.0, step=0.01)
+                    
+                    ids_comp2 = [p_id for p_id in todos_los_ids if p_id not in [st.session_state.get('c1'), st.session_state.get('c3')]]
+                    comp2 = st.selectbox(
+                        "Componente 2:", 
+                        options=ids_comp2, 
+                        index=None, 
+                        placeholder="Escriba o seleccione un componente...", 
+                        format_func=lambda x: prod_map[x],
+                        key='c2'
+                    )
+                    prop2 = st.number_input("Cantidad Componente 2 (KG):", min_value=0.0, value=0.0, step=0.01)
+
+                    ids_comp3 = [p_id for p_id in todos_los_ids if p_id not in [st.session_state.get('c1'), st.session_state.get('c2')]]
+                    comp3 = st.selectbox(
+                        "Componente 3:", 
+                        options=ids_comp3, 
+                        index=None, 
+                        placeholder="Escriba o seleccione un componente...", 
+                        format_func=lambda x: prod_map[x],
+                        key='c3'
+                    )
+                    prop3 = st.number_input("Cantidad Componente 3 (KG):", min_value=0.0, value=0.0, step=0.01)
 
                     if st.button("Guardar Fórmula Kit"):
-                        c = conn.cursor()
-                        c.execute("INSERT INTO kits (codigo_kit, nombre_kit) VALUES (%s, %s) RETURNING id", (cod_kit, nom_kit))
-                        kit_id = c.fetchone()['id']
-                        c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (%s, %s, %s)", (kit_id, comp1, prop1))
-                        c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (%s, %s, %s)", (kit_id, comp2, prop2))
-                        c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (%s, %s, %s)", (kit_id, comp3, prop3))
-                        conn.commit()
-                        st.cache_data.clear()
-                        st.success("✅ Fórmula de Kit guardada.")
+                        if not cod_kit or not nom_kit:
+                            st.error("❌ Indique el código y nombre del Kit.")
+                        elif not any([comp1, comp2, comp3]):
+                            st.error("❌ Seleccione al menos un componente para el kit.")
+                        else:
+                            c = conn.cursor()
+                            c.execute("INSERT INTO kits (codigo_kit, nombre_kit, precio_venta) VALUES (%s, %s, %s) RETURNING id", (cod_kit, nom_kit, precio_vta_kit))
+                            kit_id = c.fetchone()['id']
+                            
+                            if comp1 and prop1 > 0:
+                                c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (%s, %s, %s)", (kit_id, comp1, prop1))
+                            if comp2 and prop2 > 0:
+                                c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (%s, %s, %s)", (kit_id, comp2, prop2))
+                            if comp3 and prop3 > 0:
+                                c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (%s, %s, %s)", (kit_id, comp3, prop3))
+                                
+                            conn.commit()
+                            c.close()
+                            st.cache_data.clear()
+                            st.success("✅ Fórmula de Kit guardada exitosamente.")
+                            st.rerun()
 
         st.subheader("Análisis de Costo y Margen Teórico por Kit", anchor=False)
         try:
             df_kits_list = cargar_tabla_sql("SELECT * FROM kits")
             for idx, k_item in df_kits_list.iterrows():
-                df_comp_k = cargar_tabla_sql(f"""
+                df_comp_k = cargar_tabla_sql("""
                     SELECT kc.porcentaje_o_cantidad, p.costo_promedio, p.nombre_au
                     FROM kit_componentes kc
                     JOIN productos p ON kc.componente_id = p.id
-                    WHERE kc.kit_id = {k_item['id']}
-                """)
+                    WHERE kc.kit_id = %s
+                """, params=(k_item['id'],))
                 
                 costo_mezcla_kg = sum(df_comp_k['porcentaje_o_cantidad'] * df_comp_k['costo_promedio'])
-                st.info(f"🧪 **{k_item['codigo_kit']} - {k_item['nombre_kit']}** | Costo Promedio Móvil Mezcla: **${costo_mezcla_kg:,.2f} COP / KG**")
+                st.info(f"🧪 **{k_item['codigo_kit']} - {k_item['nombre_kit']}** | Costo Promedio Móvil Mezcla: **${costo_mezcla_kg:,.2f} COP / KG** | Precio Venta: **${k_item['precio_venta']:,.2f} COP**")
         except Exception:
             st.info("Aún no hay kits creados.")
 
     elif menu == "🚨 Requerimiento Comercial (MRP)":
         st.title("🚨 Motor MRP: Análisis de Materias Primas y Empaques", anchor=False)
-        
         try:
             df_kits = cargar_tabla_sql("SELECT * FROM kits")
         except Exception:
@@ -972,12 +1026,12 @@ else:
             
             if st.button("🔍 Evaluar Disponibilidad y Generar Requerimientos"):
                 st.subheader("1. Evaluación de Materias Primas")
-                df_comps = cargar_tabla_sql(f"""
+                df_comps = cargar_tabla_sql("""
                     SELECT kc.componente_id, p.codigo_au, p.nombre_au, kc.porcentaje_o_cantidad, p.costo_promedio
                     FROM kit_componentes kc
                     JOIN productos p ON kc.componente_id = p.id
-                    WHERE kc.kit_id = {kit_sel}
-                """)
+                    WHERE kc.kit_id = %s
+                """, params=(kit_sel,))
                 
                 costo_mezcla_total = 0.0
                 
@@ -998,11 +1052,9 @@ else:
                 
                 st.subheader("2. Regla de Empaques y Evaluación en Bodega 4", anchor=False)
                 if cant_solicitada <= 2:
-                    unidades_envase = 1
-                    tipo_envase = "Envase 2 KG"
+                    unidades_envase, tipo_envase = 1, "Envase 2 KG"
                 elif cant_solicitada <= 5:
-                    unidades_envase = 1
-                    tipo_envase = "Envase 5 KG"
+                    unidades_envase, tipo_envase = 1, "Envase 5 KG"
                 else:
                     unidades_envase = int(cant_solicitada // 20) + (1 if cant_solicitada % 20 != 0 else 0)
                     tipo_envase = "Envase 20 KG"
@@ -1023,7 +1075,7 @@ else:
             if df_kardex.empty:
                 st.info("Aún no hay movimientos registrados en el Kardex.")
             else:
-                st.dataframe(df_kardex, use_container_width=True)
+                st.dataframe(df_kardex, width="stretch")
         except Exception:
             st.info("Aún no se han generado registros en el Kardex.")
 
@@ -1031,7 +1083,7 @@ else:
         st.title("⚙️ Gestión de Claves y Usuarios", anchor=False)
         
         st.subheader("🔑 Cambiar mi Contraseña", anchor=False)
-        with st.form("form_cambiar_clave"):
+        with st.form("form_cambiar_clave", clear_on_submit=True):
             pwd_actual = st.text_input("Contraseña Actual", type="password")
             pwd_nueva = st.text_input("Nueva Contraseña", type="password")
             pwd_confirm = st.text_input("Confirmar Nueva Contraseña", type="password")
@@ -1054,9 +1106,10 @@ else:
             c_usr = conn.cursor()
             c_usr.execute("SELECT id, username, rol FROM usuarios")
             users_list = c_usr.fetchall()
+            c_usr.close()
             
             df_users = pd.DataFrame(users_list, columns=['ID', 'Usuario', 'Rol'])
-            st.dataframe(df_users, use_container_width=True)
+            st.dataframe(df_users, width="stretch")
             
             with st.expander("Resetear contraseña a otro usuario"):
                 usr_to_reset = st.selectbox("Seleccionar usuario:", df_users['Usuario'].tolist())
