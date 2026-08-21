@@ -500,58 +500,66 @@ else:
             ]
             
         if not df_prods.empty:
-            prod_sel_id = st.selectbox("Seleccione un producto del resultado:", df_prods['id'].tolist(), 
-                                     format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_au'].values[0]} | {df_prods[df_prods['id']==x]['nombre_au'].values[0]} (Prov: {df_prods[df_prods['id']==x]['codigo_proveedor'].values[0]})")
+            prod_sel_id = st.selectbox(
+                "Seleccione un producto del resultado:", 
+                df_prods['id'].tolist(), 
+                index=None,
+                placeholder="-- Seleccione un producto para ver la ficha --",
+                format_func=lambda x: f"{df_prods[df_prods['id']==x]['codigo_au'].values[0]} | {df_prods[df_prods['id']==x]['nombre_au'].values[0]} (Prov: {df_prods[df_prods['id']==x]['codigo_proveedor'].values[0]})"
+            )
             
-            p = df_prods[df_prods['id'] == prod_sel_id].iloc[0]
-            existencia_total = obtener_existencia_producto(prod_sel_id)
-            comp_oc = obtener_oc_pendientes(prod_sel_id)
-            
-            c = conn.cursor()
-            c.execute("SELECT SUM(cantidad) as ent FROM kardex WHERE producto_id = %s AND tipo_movimiento = 'ENTRADA'", (prod_sel_id,))
-            r_ent = c.fetchone()['ent']
-            tot_entradas = float(r_ent) if r_ent else 0.0
-            
-            c.execute("SELECT SUM(cantidad) as sal FROM kardex WHERE producto_id = %s AND tipo_movimiento IN ('SALIDA', 'ENSAMBLE', 'MERMA')", (prod_sel_id,))
-            r_sal = c.fetchone()['sal']
-            tot_salidas = float(r_sal) if r_sal else 0.0
+            if prod_sel_id:
+                p = df_prods[df_prods['id'] == prod_sel_id].iloc[0]
+                existencia_total = obtener_existencia_producto(prod_sel_id)
+                comp_oc = obtener_oc_pendientes(prod_sel_id)
+                
+                c = conn.cursor()
+                c.execute("SELECT SUM(cantidad) as ent FROM kardex WHERE producto_id = %s AND tipo_movimiento = 'ENTRADA'", (prod_sel_id,))
+                r_ent = c.fetchone()['ent']
+                tot_entradas = float(r_ent) if r_ent else 0.0
+                
+                c.execute("SELECT SUM(cantidad) as sal FROM kardex WHERE producto_id = %s AND tipo_movimiento IN ('SALIDA', 'ENSAMBLE', 'MERMA')", (prod_sel_id,))
+                r_sal = c.fetchone()['sal']
+                tot_salidas = float(r_sal) if r_sal else 0.0
 
-            comp_venta = float(p['comp_venta']) if p['comp_venta'] else 0.0
-            comp_op = float(p['comp_op']) if p['comp_op'] else 0.0
-            comp_requisicion = float(p['comp_requisicion']) if p['comp_requisicion'] else 0.0
-            punto_pedido = float(p['punto_pedido']) if p['punto_pedido'] else 0.0
-            nivel_maximo = float(p['nivel_maximo']) if p['nivel_maximo'] else 0.0
-            nivel_minimo = float(p['nivel_minimo']) if p['nivel_minimo'] else 0.0
-            costo_promedio = float(p['costo_promedio']) if p['costo_promedio'] else 0.0
-            ultimo_costo = float(p['ultimo_costo']) if p['ultimo_costo'] else 0.0
+                comp_venta = float(p['comp_venta']) if p['comp_venta'] else 0.0
+                comp_op = float(p['comp_op']) if p['comp_op'] else 0.0
+                comp_requisicion = float(p['comp_requisicion']) if p['comp_requisicion'] else 0.0
+                punto_pedido = float(p['punto_pedido']) if p['punto_pedido'] else 0.0
+                nivel_maximo = float(p['nivel_maximo']) if p['nivel_maximo'] else 0.0
+                nivel_minimo = float(p['nivel_minimo']) if p['nivel_minimo'] else 0.0
+                costo_promedio = float(p['costo_promedio']) if p['costo_promedio'] else 0.0
+                ultimo_costo = float(p['ultimo_costo']) if p['ultimo_costo'] else 0.0
 
-            disp_total = existencia_total - comp_venta - comp_op + comp_oc
+                disp_total = existencia_total - comp_venta - comp_op + comp_oc
 
-            st.markdown(f"""
-            <div style="background-color:#000080; color:#FFFFFF; font-family:monospace; padding:15px; border-radius:5px;">
-            -----------------------------------------------------------------------------------------------------<br>
-            | Item &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{p['codigo_au']}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>{str(p['nombre_au']).upper()}</b><br>
-            | Cód Proveedor: <b>{p['codigo_proveedor']}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; PROVEEDOR: <b>{str(p['proveedor']).upper()}</b><br>
-            | Localizacion : <b>{str(p['nombre_bodega']).upper()}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; APLICA IVA: <b>{p.get('aplica_iva', 'SI')}</b><br>
-            -----------------------------------------------------------------------------------------------------<br>
-            | U.M: <b>{p['unidad_medida']}</b> Clasif.: <b>{p['categoria']} / {p['linea']}</b> &nbsp;|&nbsp; Acumulados Desde &nbsp;&nbsp;&nbsp;&nbsp;: AURANZA-2026<br>
-            +-----------------------------------------------+ Total Entradas &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {tot_entradas:,.3f}<br>
-            | Existencia Actual : <b>{existencia_total:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Total Salidas &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {tot_salidas:,.3f}<br>
-            | Comp. en Venta &nbsp;&nbsp;&nbsp;&nbsp;: <b>{comp_venta:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+------------------------------------+<br>
-            | Comp. en O.P. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{comp_op:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Costo Prom. Base &nbsp;&nbsp;&nbsp;&nbsp;: $ {costo_promedio:,.2f}<br>
-            | Comp. Requisicion : <b>{comp_requisicion:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Ultimo Costo Base &nbsp;&nbsp;&nbsp;: $ {ultimo_costo:,.2f}<br>
-            | Comp. en O.C. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{comp_oc:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Fecha Ult. Costo &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {p['fecha_ultimo_costo'] if p['fecha_ultimo_costo'] else 'N/A'}<br>
-            | <b>Total Disponible &nbsp;: {disp_total:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+------------------------------------+<br>
-            -----------------------------------------------------------------------------------------------------<br>
-            | Punto Pedido &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{punto_pedido:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Nivel Maximo &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {nivel_maximo:,.3f}<br>
-            | Cantidad a Pedir &nbsp;&nbsp;: <b>{max(0.0, punto_pedido - disp_total):,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Nivel Minimo &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {nivel_minimo:,.3f}<br>
-            -----------------------------------------------------------------------------------------------------
-            </div>
-            """, unsafe_allow_html=True)
-            
-            st.subheader("📦 Trazabilidad por Lotes Activos")
-            df_lotes = cargar_tabla_sql(f"SELECT lote_proveedor, cantidad_actual, fecha_fabricacion, fecha_vencimiento, costo_unitario, remision_factura, observaciones FROM lotes WHERE producto_id = {prod_sel_id} AND cantidad_actual > 0")
-            st.dataframe(df_lotes, use_container_width=True)
+                st.markdown(f"""
+                <div style="background-color:#000080; color:#FFFFFF; font-family:monospace; padding:15px; border-radius:5px;">
+                -----------------------------------------------------------------------------------------------------<br>
+                | Item &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{p['codigo_au']}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>{str(p['nombre_au']).upper()}</b><br>
+                | Cód Proveedor: <b>{p['codigo_proveedor']}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; PROVEEDOR: <b>{str(p['proveedor']).upper()}</b><br>
+                | Localizacion : <b>{str(p['nombre_bodega']).upper()}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; APLICA IVA: <b>{p.get('aplica_iva', 'SI')}</b><br>
+                -----------------------------------------------------------------------------------------------------<br>
+                | U.M: <b>{p['unidad_medida']}</b> Clasif.: <b>{p['categoria']} / {p['linea']}</b> &nbsp;|&nbsp; Acumulados Desde &nbsp;&nbsp;&nbsp;&nbsp;: AURANZA-2026<br>
+                +-----------------------------------------------+ Total Entradas &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {tot_entradas:,.3f}<br>
+                | Existencia Actual : <b>{existencia_total:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Total Salidas &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {tot_salidas:,.3f}<br>
+                | Comp. en Venta &nbsp;&nbsp;&nbsp;&nbsp;: <b>{comp_venta:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+------------------------------------+<br>
+                | Comp. en O.P. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{comp_op:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Costo Prom. Base &nbsp;&nbsp;&nbsp;&nbsp;: $ {costo_promedio:,.2f}<br>
+                | Comp. Requisicion : <b>{comp_requisicion:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Ultimo Costo Base &nbsp;&nbsp;&nbsp;: $ {ultimo_costo:,.2f}<br>
+                | Comp. en O.C. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{comp_oc:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Fecha Ult. Costo &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {p['fecha_ultimo_costo'] if p['fecha_ultimo_costo'] else 'N/A'}<br>
+                | <b>Total Disponible &nbsp;: {disp_total:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+------------------------------------+<br>
+                -----------------------------------------------------------------------------------------------------<br>
+                | Punto Pedido &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{punto_pedido:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Nivel Maximo &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {nivel_maximo:,.3f}<br>
+                | Cantidad a Pedir &nbsp;&nbsp;: <b>{max(0.0, punto_pedido - disp_total):,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Nivel Minimo &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {nivel_minimo:,.3f}<br>
+                -----------------------------------------------------------------------------------------------------
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.subheader("📦 Trazabilidad por Lotes Activos")
+                df_lotes = cargar_tabla_sql(f"SELECT lote_proveedor, cantidad_actual, fecha_fabricacion, fecha_vencimiento, costo_unitario, remision_factura, observaciones FROM lotes WHERE producto_id = {prod_sel_id} AND cantidad_actual > 0")
+                st.dataframe(df_lotes, use_container_width=True)
+            else:
+                st.info("👆 Por favor seleccione un producto del desplegable arriba para visualizar su ficha técnica e inventarios.")
         else:
             st.warning("⚠️ No se encontraron productos registrados.")
 
