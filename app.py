@@ -1,11 +1,12 @@
 import streamlit as st
-import sqlite3
+import psycopg2
+import psycopg2.extras
 import pandas as pd
 from datetime import datetime
 import hashlib
 
 # ==========================================
-# CONFIGURACIÓN E INICIALIZACIÓN DE BD
+# CONFIGURACIÓN E INICIALIZACIÓN DE BD (SUPABASE)
 # ==========================================
 st.set_page_config(page_title="AURANZA SAS - ERP/MRP System", layout="wide", page_icon="🧪")
 
@@ -18,8 +19,14 @@ def check_hashes(password, hashed_text):
     return False
 
 def get_connection():
-    conn = sqlite3.connect("auranza_inventario.db", check_same_thread=False)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(
+        host=st.secrets["postgres"]["host"],
+        port=st.secrets["postgres"]["port"],
+        database=st.secrets["postgres"]["dbname"],
+        user=st.secrets["postgres"]["user"],
+        password=st.secrets["postgres"]["password"],
+        cursor_factory=psycopg2.extras.DictCursor
+    )
     return conn
 
 def init_db():
@@ -29,128 +36,118 @@ def init_db():
     # Tabla de Usuarios
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS usuarios (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(100) UNIQUE NOT NULL,
         password TEXT NOT NULL,
-        rol TEXT NOT NULL
+        rol VARCHAR(50) NOT NULL
     )""")
     
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS bodegas (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nombre TEXT UNIQUE NOT NULL
+        id SERIAL PRIMARY KEY,
+        nombre VARCHAR(100) UNIQUE NOT NULL
     )""")
     
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS productos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        codigo_au TEXT UNIQUE NOT NULL,
-        codigo_proveedor TEXT NOT NULL,
+        id SERIAL PRIMARY KEY,
+        codigo_au VARCHAR(100) UNIQUE NOT NULL,
+        codigo_proveedor VARCHAR(100) NOT NULL,
         nombre_au TEXT NOT NULL,
         nombre_proveedor TEXT NOT NULL,
         proveedor TEXT NOT NULL,
-        categoria TEXT NOT NULL,
-        linea TEXT NOT NULL,
-        bodega_id INTEGER NOT NULL,
-        unidad_medida TEXT DEFAULT 'KG',
-        costo_promedio REAL DEFAULT 0.0,
-        ultimo_costo REAL DEFAULT 0.0,
+        categoria VARCHAR(100) NOT NULL,
+        linea VARCHAR(100) NOT NULL,
+        bodega_id INTEGER NOT NULL REFERENCES bodegas(id),
+        unidad_medida VARCHAR(20) DEFAULT 'KG',
+        costo_promedio NUMERIC DEFAULT 0.0,
+        ultimo_costo NUMERIC DEFAULT 0.0,
         fecha_ultimo_costo TEXT,
-        precio_venta REAL DEFAULT 0.0,
-        punto_pedido REAL DEFAULT 0.0,
-        nivel_minimo REAL DEFAULT 0.0,
-        nivel_maximo REAL DEFAULT 0.0,
-        comp_venta REAL DEFAULT 0.0,
-        comp_op REAL DEFAULT 0.0,
-        comp_requisicion REAL DEFAULT 0.0,
-        FOREIGN KEY (bodega_id) REFERENCES bodegas(id)
+        precio_venta NUMERIC DEFAULT 0.0,
+        punto_pedido NUMERIC DEFAULT 0.0,
+        nivel_minimo NUMERIC DEFAULT 0.0,
+        nivel_maximo NUMERIC DEFAULT 0.0,
+        comp_venta NUMERIC DEFAULT 0.0,
+        comp_op NUMERIC DEFAULT 0.0,
+        comp_requisicion NUMERIC DEFAULT 0.0
     )""")
     
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS lotes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        producto_id INTEGER NOT NULL,
-        bodega_id INTEGER NOT NULL,
+        id SERIAL PRIMARY KEY,
+        producto_id INTEGER NOT NULL REFERENCES productos(id),
+        bodega_id INTEGER NOT NULL REFERENCES bodegas(id),
         lote_proveedor TEXT NOT NULL,
         fecha_fabricacion TEXT,
         fecha_vencimiento TEXT,
         fecha_recepcion TEXT,
-        cantidad_actual REAL DEFAULT 0.0,
-        costo_unitario REAL DEFAULT 0.0,
+        cantidad_actual NUMERIC DEFAULT 0.0,
+        costo_unitario NUMERIC DEFAULT 0.0,
         remision_factura TEXT,
-        observaciones TEXT,
-        FOREIGN KEY (producto_id) REFERENCES productos(id),
-        FOREIGN KEY (bodega_id) REFERENCES bodegas(id)
+        observaciones TEXT
     )""")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS ordenes_compra (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        numero_oc TEXT UNIQUE NOT NULL,
+        id SERIAL PRIMARY KEY,
+        numero_oc VARCHAR(100) UNIQUE NOT NULL,
         proveedor TEXT NOT NULL,
-        estado TEXT DEFAULT 'ABIERTA',
+        estado VARCHAR(50) DEFAULT 'ABIERTA',
         fecha_creacion TEXT NOT NULL
     )""")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS ordenes_compra_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        oc_id INTEGER NOT NULL,
-        producto_id INTEGER NOT NULL,
-        cantidad_solicitada REAL NOT NULL,
-        costo_pactado REAL NOT NULL,
-        moneda TEXT DEFAULT 'COP',
-        trm REAL DEFAULT 1.0,
-        FOREIGN KEY (oc_id) REFERENCES ordenes_compra(id),
-        FOREIGN KEY (producto_id) REFERENCES productos(id)
+        id SERIAL PRIMARY KEY,
+        oc_id INTEGER NOT NULL REFERENCES ordenes_compra(id),
+        producto_id INTEGER NOT NULL REFERENCES productos(id),
+        cantidad_solicitada NUMERIC NOT NULL,
+        costo_pactado NUMERIC NOT NULL,
+        moneda VARCHAR(10) DEFAULT 'COP',
+        trm NUMERIC DEFAULT 1.0
     )""")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS pedidos_venta (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        numero_pedido TEXT UNIQUE NOT NULL,
+        id SERIAL PRIMARY KEY,
+        numero_pedido VARCHAR(100) UNIQUE NOT NULL,
         cliente TEXT NOT NULL,
-        producto_id INTEGER NOT NULL,
-        cantidad_solicitada REAL NOT NULL,
-        precio_unitario REAL NOT NULL,
+        producto_id INTEGER NOT NULL REFERENCES productos(id),
+        cantidad_solicitada NUMERIC NOT NULL,
+        precio_unitario NUMERIC NOT NULL,
         vendedor TEXT NOT NULL,
         fecha_pedido TEXT NOT NULL,
-        estado TEXT DEFAULT 'PENDIENTE',
-        FOREIGN KEY (producto_id) REFERENCES productos(id)
+        estado VARCHAR(50) DEFAULT 'PENDIENTE'
     )""")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS kits (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        codigo_kit TEXT UNIQUE NOT NULL,
+        id SERIAL PRIMARY KEY,
+        codigo_kit VARCHAR(100) UNIQUE NOT NULL,
         nombre_kit TEXT NOT NULL
     )""")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS kit_componentes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        kit_id INTEGER NOT NULL,
-        componente_id INTEGER NOT NULL,
-        porcentaje_o_cantidad REAL NOT NULL,
-        FOREIGN KEY (kit_id) REFERENCES kits(id),
-        FOREIGN KEY (componente_id) REFERENCES productos(id)
+        id SERIAL PRIMARY KEY,
+        kit_id INTEGER NOT NULL REFERENCES kits(id),
+        componente_id INTEGER NOT NULL REFERENCES productos(id),
+        porcentaje_o_cantidad NUMERIC NOT NULL
     )""")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS kardex (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         fecha TEXT NOT NULL,
-        producto_id INTEGER NOT NULL,
-        bodega_id INTEGER NOT NULL,
-        tipo_movimiento TEXT NOT NULL,
-        cantidad REAL NOT NULL,
-        costo_unitario REAL NOT NULL,
+        producto_id INTEGER NOT NULL REFERENCES productos(id),
+        bodega_id INTEGER NOT NULL REFERENCES bodegas(id),
+        tipo_movimiento VARCHAR(50) NOT NULL,
+        cantidad NUMERIC NOT NULL,
+        costo_unitario NUMERIC NOT NULL,
         usuario TEXT NOT NULL,
         motivo TEXT,
         lote TEXT,
-        documento_ref TEXT,
-        FOREIGN KEY (producto_id) REFERENCES productos(id),
-        FOREIGN KEY (bodega_id) REFERENCES bodegas(id)
+        documento_ref TEXT
     )""")
 
     default_users = [
@@ -159,11 +156,11 @@ def init_db():
         ("comercial", make_hashes("comercial123"), "Comercial")
     ]
     for user, pwd, role in default_users:
-        cursor.execute("INSERT OR IGNORE INTO usuarios (username, password, rol) VALUES (?, ?, ?)", (user, pwd, role))
+        cursor.execute("INSERT INTO usuarios (username, password, rol) VALUES (%s, %s, %s) ON CONFLICT (username) DO NOTHING", (user, pwd, role))
 
     bodegas = ["FINE", "INDUSTRIAL", "MATERIAS PRIMAS", "ENVASES Y DEMÁS"]
     for b in bodegas:
-        cursor.execute("INSERT OR IGNORE INTO bodegas (nombre) VALUES (?)", (b,))
+        cursor.execute("INSERT INTO bodegas (nombre) VALUES (%s) ON CONFLICT (nombre) DO NOTHING", (b,))
 
     conn.commit()
     conn.close()
@@ -176,7 +173,7 @@ init_db()
 def login_user(username, password):
     conn = get_connection()
     c = conn.cursor()
-    c.execute('SELECT * FROM usuarios WHERE username = ? AND password = ?', (username, make_hashes(password)))
+    c.execute('SELECT * FROM usuarios WHERE username = %s AND password = %s', (username, make_hashes(password)))
     data = c.fetchone()
     conn.close()
     return data
@@ -184,7 +181,7 @@ def login_user(username, password):
 def update_password(username, new_password):
     conn = get_connection()
     c = conn.cursor()
-    c.execute('UPDATE usuarios SET password = ? WHERE username = ?', (make_hashes(new_password), username))
+    c.execute('UPDATE usuarios SET password = %s WHERE username = %s', (make_hashes(new_password), username))
     conn.commit()
     conn.close()
 
@@ -196,10 +193,10 @@ def calcular_costo_promedio_movil(existencia_actual, costo_prom_actual, cant_nue
 def obtener_existencia_producto(producto_id):
     conn = get_connection()
     c = conn.cursor()
-    c.execute("SELECT SUM(cantidad_actual) as total FROM lotes WHERE producto_id = ?", (producto_id,))
+    c.execute("SELECT SUM(cantidad_actual) as total FROM lotes WHERE producto_id = %s", (producto_id,))
     res = c.fetchone()['total']
     conn.close()
-    return res if res else 0.0
+    return float(res) if res else 0.0
 
 def obtener_oc_pendientes(producto_id):
     conn = get_connection()
@@ -208,44 +205,44 @@ def obtener_oc_pendientes(producto_id):
         SELECT SUM(i.cantidad_solicitada) as oc_cant 
         FROM ordenes_compra_items i 
         JOIN ordenes_compra oc ON i.oc_id = oc.id 
-        WHERE i.producto_id = ? AND oc.estado = 'ABIERTA'
+        WHERE i.producto_id = %s AND oc.estado = 'ABIERTA'
     """, (producto_id,))
     res = c.fetchone()['oc_cant']
     conn.close()
-    return res if res else 0.0
+    return float(res) if res else 0.0
 
 def registrar_recepcion(producto_id, cantidad, lote_prov, fab_date, exp_date, costo_cop, moneda, trm, costo_ext, remision, obs, usuario, oc_id=None):
     conn = get_connection()
     c = conn.cursor()
     
-    c.execute("SELECT * FROM productos WHERE id = ?", (producto_id,))
+    c.execute("SELECT * FROM productos WHERE id = %s", (producto_id,))
     prod = c.fetchone()
     
     existencia_act = obtener_existencia_producto(producto_id)
-    costo_prom_act = prod['costo_promedio']
+    costo_prom_act = float(prod['costo_promedio']) if prod['costo_promedio'] else 0.0
     
     nuevo_costo_prom = calcular_costo_promedio_movil(existencia_act, costo_prom_act, cantidad, costo_cop)
     fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     c.execute("""
         UPDATE productos 
-        SET costo_promedio = ?, ultimo_costo = ?, fecha_ultimo_costo = ? 
-        WHERE id = ?
+        SET costo_promedio = %s, ultimo_costo = %s, fecha_ultimo_costo = %s 
+        WHERE id = %s
     """, (nuevo_costo_prom, costo_cop, fecha_hoy, producto_id))
     
     c.execute("""
         INSERT INTO lotes (producto_id, bodega_id, lote_proveedor, fecha_fabricacion, fecha_vencimiento, fecha_recepcion, cantidad_actual, costo_unitario, remision_factura, observaciones)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """, (producto_id, prod['bodega_id'], lote_prov, fab_date, exp_date, fecha_hoy, cantidad, costo_cop, remision, obs))
     
     motivo_txt = f"Recepción Compra ({moneda} TRM: {trm})" if moneda != "COP" else "Recepción Compra"
     c.execute("""
         INSERT INTO kardex (fecha, producto_id, bodega_id, tipo_movimiento, cantidad, costo_unitario, usuario, motivo, lote, documento_ref)
-        VALUES (?, ?, ?, 'ENTRADA', ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, 'ENTRADA', %s, %s, %s, %s, %s, %s)
     """, (fecha_hoy, producto_id, prod['bodega_id'], cantidad, costo_cop, usuario, motivo_txt, lote_prov, remision))
     
     if oc_id:
-        c.execute("UPDATE ordenes_compra SET estado = 'RECIBIDA' WHERE id = ?", (oc_id,))
+        c.execute("UPDATE ordenes_compra SET estado = 'RECIBIDA' WHERE id = %s", (oc_id,))
         
     conn.commit()
     conn.close()
@@ -257,10 +254,10 @@ def registrar_pedido_venta(num_ped, cliente, producto_id, cantidad, precio, vend
     fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     c.execute("""
         INSERT INTO pedidos_venta (numero_pedido, cliente, producto_id, cantidad_solicitada, precio_unitario, vendedor, fecha_pedido, estado)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDIENTE')
+        VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDIENTE')
     """, (num_ped, cliente, producto_id, cantidad, precio, vendedor, fecha_hoy))
     
-    c.execute("UPDATE productos SET comp_venta = comp_venta + ? WHERE id = ?", (cantidad, producto_id))
+    c.execute("UPDATE productos SET comp_venta = comp_venta + %s WHERE id = %s", (cantidad, producto_id))
     conn.commit()
     conn.close()
 
@@ -268,20 +265,20 @@ def despachar_pedido_venta(pedido_id, usuario_despacha):
     conn = get_connection()
     c = conn.cursor()
     
-    c.execute("SELECT * FROM pedidos_venta WHERE id = ?", (pedido_id,))
+    c.execute("SELECT * FROM pedidos_venta WHERE id = %s", (pedido_id,))
     ped = c.fetchone()
     if not ped or ped['estado'] != 'PENDIENTE':
         conn.close()
         return False, "El pedido ya fue procesado o no existe."
     
     producto_id = ped['producto_id']
-    cant_requerida = ped['cantidad_solicitada']
+    cant_requerida = float(ped['cantidad_solicitada'])
     fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    c.execute("SELECT * FROM productos WHERE id = ?", (producto_id,))
+    c.execute("SELECT * FROM productos WHERE id = %s", (producto_id,))
     prod = c.fetchone()
     
-    c.execute("SELECT * FROM lotes WHERE producto_id = ? AND cantidad_actual > 0 ORDER BY id ASC", (producto_id,))
+    c.execute("SELECT * FROM lotes WHERE producto_id = %s AND cantidad_actual > 0 ORDER BY id ASC", (producto_id,))
     lotes = c.fetchall()
     
     cant_descontada = 0.0
@@ -289,23 +286,24 @@ def despachar_pedido_venta(pedido_id, usuario_despacha):
         if cant_descontada >= cant_requerida:
             break
         
+        l_cant = float(l['cantidad_actual'])
         faltante = cant_requerida - cant_descontada
-        if l['cantidad_actual'] <= faltante:
-            tomar = l['cantidad_actual']
-            c.execute("UPDATE lotes SET cantidad_actual = 0 WHERE id = ?", (l['id'],))
+        if l_cant <= faltante:
+            tomar = l_cant
+            c.execute("UPDATE lotes SET cantidad_actual = 0 WHERE id = %s", (l['id'],))
         else:
             tomar = faltante
-            c.execute("UPDATE lotes SET cantidad_actual = cantidad_actual - ? WHERE id = ?", (tomar, l['id']))
+            c.execute("UPDATE lotes SET cantidad_actual = cantidad_actual - %s WHERE id = %s", (tomar, l['id']))
             
         cant_descontada += tomar
         
         c.execute("""
             INSERT INTO kardex (fecha, producto_id, bodega_id, tipo_movimiento, cantidad, costo_unitario, usuario, motivo, lote, documento_ref)
-            VALUES (?, ?, ?, 'SALIDA', ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, 'SALIDA', %s, %s, %s, %s, %s, %s)
         """, (fecha_hoy, producto_id, prod['bodega_id'], tomar, prod['costo_promedio'], usuario_despacha, f"Despacho Pedido {ped['numero_pedido']} - Cliente: {ped['cliente']}", l['lote_proveedor'], ped['numero_pedido']))
 
-    c.execute("UPDATE productos SET comp_venta = MAX(0.0, comp_venta - ?) WHERE id = ?", (cant_requerida, producto_id))
-    c.execute("UPDATE pedidos_venta SET estado = 'DESPACHADO' WHERE id = ?", (pedido_id,))
+    c.execute("UPDATE productos SET comp_venta = GREATEST(0.0, comp_venta - %s) WHERE id = %s", (cant_requerida, producto_id))
+    c.execute("UPDATE pedidos_venta SET estado = 'DESPACHADO' WHERE id = %s", (pedido_id,))
     
     conn.commit()
     conn.close()
@@ -339,7 +337,7 @@ if not st.session_state['logged_in']:
             else:
                 st.error("❌ Usuario o contraseña incorrectos.")
 else:
-    # MENÚ LATERAL RESTAURADO EXACTAMENTE SEGÚN SOLICITUD
+    # MENÚ LATERAL RESTAURADO
     st.sidebar.title("🧪 AURANZA SAS ERP")
     st.sidebar.markdown(f"👤 **Usuario:** `{st.session_state['username']}`")
     st.sidebar.markdown(f"🛡️ **Rol:** `{st.session_state['rol']}`")
@@ -407,40 +405,49 @@ else:
             comp_oc = obtener_oc_pendientes(prod_sel_id)
             
             c = conn.cursor()
-            c.execute("SELECT SUM(cantidad) as ent FROM kardex WHERE producto_id = ? AND tipo_movimiento = 'ENTRADA'", (prod_sel_id,))
+            c.execute("SELECT SUM(cantidad) as ent FROM kardex WHERE producto_id = %s AND tipo_movimiento = 'ENTRADA'", (prod_sel_id,))
             r_ent = c.fetchone()['ent']
-            tot_entradas = r_ent if r_ent else 0.0
+            tot_entradas = float(r_ent) if r_ent else 0.0
             
-            c.execute("SELECT SUM(cantidad) as sal FROM kardex WHERE producto_id = ? AND tipo_movimiento IN ('SALIDA', 'ENSAMBLE', 'MERMA')", (prod_sel_id,))
+            c.execute("SELECT SUM(cantidad) as sal FROM kardex WHERE producto_id = %s AND tipo_movimiento IN ('SALIDA', 'ENSAMBLE', 'MERMA')", (prod_sel_id,))
             r_sal = c.fetchone()['sal']
-            tot_salidas = r_sal if r_sal else 0.0
+            tot_salidas = float(r_sal) if r_sal else 0.0
 
-            disp_total = existencia_total - p['comp_venta'] - p['comp_op'] + comp_oc
+            comp_venta = float(p['comp_venta']) if p['comp_venta'] else 0.0
+            comp_op = float(p['comp_op']) if p['comp_op'] else 0.0
+            comp_requisicion = float(p['comp_requisicion']) if p['comp_requisicion'] else 0.0
+            punto_pedido = float(p['punto_pedido']) if p['punto_pedido'] else 0.0
+            nivel_maximo = float(p['nivel_maximo']) if p['nivel_maximo'] else 0.0
+            nivel_minimo = float(p['nivel_minimo']) if p['nivel_minimo'] else 0.0
+            costo_promedio = float(p['costo_promedio']) if p['costo_promedio'] else 0.0
+            ultimo_costo = float(p['ultimo_costo']) if p['ultimo_costo'] else 0.0
+
+            disp_total = existencia_total - comp_venta - comp_op + comp_oc
 
             st.markdown(f"""
             <div style="background-color:#000080; color:#FFFFFF; font-family:monospace; padding:15px; border-radius:5px;">
             -----------------------------------------------------------------------------------------------------<br>
-            | Item &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{p['codigo_au']}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>{p['nombre_au'].upper()}</b><br>
-            | Cód Proveedor: <b>{p['codigo_proveedor']}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; PROVEEDOR: <b>{p['proveedor'].upper()}</b><br>
-            | Localizacion : <b>{p['nombre_bodega'].upper()}</b><br>
+            | Item &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{p['codigo_au']}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>{str(p['nombre_au']).upper()}</b><br>
+            | Cód Proveedor: <b>{p['codigo_proveedor']}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; PROVEEDOR: <b>{str(p['proveedor']).upper()}</b><br>
+            | Localizacion : <b>{str(p['nombre_bodega']).upper()}</b><br>
             -----------------------------------------------------------------------------------------------------<br>
             | U.M: <b>{p['unidad_medida']}</b> Clasif.: <b>{p['categoria']} / {p['linea']}</b> &nbsp;|&nbsp; Acumulados Desde &nbsp;&nbsp;&nbsp;&nbsp;: AURANZA-2026<br>
             +-----------------------------------------------+ Total Entradas &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {tot_entradas:,.3f}<br>
             | Existencia Actual : <b>{existencia_total:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Total Salidas &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {tot_salidas:,.3f}<br>
-            | Comp. en Venta &nbsp;&nbsp;&nbsp;&nbsp;: <b>{p['comp_venta']:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+------------------------------------+<br>
-            | Comp. en O.P. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{p['comp_op']:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Costo Prom. Ponderado: $ {p['costo_promedio']:,.2f}<br>
-            | Comp. Requisicion : <b>{p['comp_requisicion']:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Ultimo Costo &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: $ {p['ultimo_costo']:,.2f}<br>
+            | Comp. en Venta &nbsp;&nbsp;&nbsp;&nbsp;: <b>{comp_venta:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+------------------------------------+<br>
+            | Comp. en O.P. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{comp_op:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Costo Prom. Ponderado: $ {costo_promedio:,.2f}<br>
+            | Comp. Requisicion : <b>{comp_requisicion:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Ultimo Costo &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: $ {ultimo_costo:,.2f}<br>
             | Comp. en O.C. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{comp_oc:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Fecha Ult. Costo &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {p['fecha_ultimo_costo'] if p['fecha_ultimo_costo'] else 'N/A'}<br>
             | <b>Total Disponible &nbsp;: {disp_total:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+------------------------------------+<br>
             -----------------------------------------------------------------------------------------------------<br>
-            | Punto Pedido &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{p['punto_pedido']:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Nivel Maximo &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {p['nivel_maximo']:,.3f}<br>
-            | Cantidad a Pedir &nbsp;&nbsp;: <b>{max(0.0, p['punto_pedido'] - disp_total):,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Nivel Minimo &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {p['nivel_minimo']:,.3f}<br>
+            | Punto Pedido &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b>{punto_pedido:,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Nivel Maximo &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {nivel_maximo:,.3f}<br>
+            | Cantidad a Pedir &nbsp;&nbsp;: <b>{max(0.0, punto_pedido - disp_total):,.3f}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp; Nivel Minimo &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {nivel_minimo:,.3f}<br>
             -----------------------------------------------------------------------------------------------------
             </div>
             """, unsafe_allow_html=True)
             
             st.subheader("📦 Trazabilidad por Lotes Activos")
-            df_lotes = pd.read_sql_query("SELECT lote_proveedor, cantidad_actual, fecha_fabricacion, fecha_vencimiento, costo_unitario, remision_factura, observaciones FROM lotes WHERE producto_id = ? AND cantidad_actual > 0", conn, params=(prod_sel_id,))
+            df_lotes = pd.read_sql_query("SELECT lote_proveedor, cantidad_actual, fecha_fabricacion, fecha_vencimiento, costo_unitario, remision_factura, observaciones FROM lotes WHERE producto_id = %s AND cantidad_actual > 0", conn, params=(prod_sel_id,))
             st.dataframe(df_lotes, use_container_width=True)
         else:
             st.warning("⚠️ No se encontraron productos registrados.")
@@ -475,7 +482,7 @@ else:
                         
                         c_p3, c_p4 = st.columns(2)
                         cant_ped = c_p3.number_input("Cantidad Requerida (KG/Unidades):", min_value=0.1, value=10.0)
-                        precio_ped = c_p4.number_input("Precio de Venta Unitario ($ COP):", value=float(p_sel_info['precio_venta']))
+                        precio_ped = c_p4.number_input("Precio de Venta Unitario ($ COP):", value=float(p_sel_info['precio_venta']) if p_sel_info['precio_venta'] else 0.0)
                         
                         st.info(f"📊 **Stock Físico Actual:** {stock_disp:,.2f} KG | **Valor Total Venta:** ${cant_ped * precio_ped:,.2f} COP")
                         
@@ -561,7 +568,7 @@ else:
                         c = conn.cursor()
                         c.execute("""
                             INSERT INTO productos (codigo_au, codigo_proveedor, nombre_au, nombre_proveedor, proveedor, categoria, linea, bodega_id, precio_venta, punto_pedido, nivel_minimo, nivel_maximo)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """, (codigo_au, codigo_prov, nombre_au, nombre_prov, proveedor, categoria, linea, bodega_id, precio_vta, pt_pedido, nv_min, nv_max))
                         conn.commit()
                         st.success(f"✅ Producto {codigo_au} - {nombre_au} creado exitosamente!")
@@ -610,9 +617,9 @@ else:
                     
                     if st.button("Emitir Orden de Compra"):
                         c = conn.cursor()
-                        c.execute("INSERT INTO ordenes_compra (numero_oc, proveedor, fecha_creacion) VALUES (?, ?, ?)", (num_oc, prod_info['proveedor'], datetime.now().strftime("%Y-%m-%d")))
-                        oc_id = c.lastrowid
-                        c.execute("INSERT INTO ordenes_compra_items (oc_id, producto_id, cantidad_solicitada, costo_pactado, moneda, trm) VALUES (?, ?, ?, ?, ?, ?)", (oc_id, prod_oc_id, cant_oc, costo_cop_calc, moneda_oc, trm_oc))
+                        c.execute("INSERT INTO ordenes_compra (numero_oc, proveedor, fecha_creacion) VALUES (%s, %s, %s) RETURNING id", (num_oc, prod_info['proveedor'], datetime.now().strftime("%Y-%m-%d")))
+                        oc_id = c.fetchone()['id']
+                        c.execute("INSERT INTO ordenes_compra_items (oc_id, producto_id, cantidad_solicitada, costo_pactado, moneda, trm) VALUES (%s, %s, %s, %s, %s, %s)", (oc_id, prod_oc_id, cant_oc, costo_cop_calc, moneda_oc, trm_oc))
                         conn.commit()
                         st.success(f"✅ OC {num_oc} emitida correctamente.")
 
@@ -644,7 +651,9 @@ else:
                         cm1, cm2, cm3 = st.columns(3)
                         moneda_rx = cm1.selectbox("Moneda Factura:", ["COP", "USD", "EUR"], index=["COP", "USD", "EUR"].index(item_oc['moneda']))
                         trm_rx = cm2.number_input("TRM Aplicada Factura:", value=float(item_oc['trm']))
-                        costo_ext_rx = cm3.number_input(f"Costo Facturado en {moneda_rx}:", value=float(item_oc['costo_pactado'] / item_oc['trm']) if item_oc['trm'] > 0 else float(item_oc['costo_pactado']))
+                        costo_pactado_val = float(item_oc['costo_pactado'])
+                        trm_val = float(item_oc['trm'])
+                        costo_ext_rx = cm3.number_input(f"Costo Facturado en {moneda_rx}:", value=float(costo_pactado_val / trm_val) if trm_val > 0 else costo_pactado_val)
                         
                         costo_cop_final = costo_ext_rx * trm_rx if moneda_rx != "COP" else costo_ext_rx
                         st.success(f"💰 **Costo Final de Entrada a Valoración:** ${costo_cop_final:,.2f} COP / KG")
@@ -659,7 +668,7 @@ else:
                         obs_rx = st.text_area("Observaciones de Recepción:")
                         
                         if st.form_submit_button("Confirmar Entrada y Actualizar Costo Promedio Móvil"):
-                            registrar_recepcion(item_oc['producto_id'], cant_rx, lote_prov, str(fab_date), str(exp_date), costo_cop_final, moneda_rx, trm_rx, costo_ext_rx, remision, obs_rx, st.session_state['username'], oc_id=item_oc['id'])
+                            registrar_recepcion(int(item_oc['producto_id']), cant_rx, lote_prov, str(fab_date), str(exp_date), costo_cop_final, moneda_rx, trm_rx, costo_ext_rx, remision, obs_rx, st.session_state['username'], oc_id=int(item_oc['id']))
                             st.success("✅ Entrada registrada exitosamente. Costo promedio ponderado móvil actualizado.")
 
     elif menu == "🧪 Kits y Ensambles":
@@ -691,11 +700,11 @@ else:
 
                     if st.button("Guardar Fórmula Kit"):
                         c = conn.cursor()
-                        c.execute("INSERT INTO kits (codigo_kit, nombre_kit) VALUES (?, ?)", (cod_kit, nom_kit))
-                        kit_id = c.lastrowid
-                        c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (?, ?, ?)", (kit_id, comp1, prop1))
-                        c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (?, ?, ?)", (kit_id, comp2, prop2))
-                        c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (?, ?, ?)", (kit_id, comp3, prop3))
+                        c.execute("INSERT INTO kits (codigo_kit, nombre_kit) VALUES (%s, %s) RETURNING id", (cod_kit, nom_kit))
+                        kit_id = c.fetchone()['id']
+                        c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (%s, %s, %s)", (kit_id, comp1, prop1))
+                        c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (%s, %s, %s)", (kit_id, comp2, prop2))
+                        c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (%s, %s, %s)", (kit_id, comp3, prop3))
                         conn.commit()
                         st.success("✅ Fórmula de Kit guardada.")
 
@@ -707,7 +716,7 @@ else:
                     SELECT kc.porcentaje_o_cantidad, p.costo_promedio, p.nombre_au
                     FROM kit_componentes kc
                     JOIN productos p ON kc.componente_id = p.id
-                    WHERE kc.kit_id = ?
+                    WHERE kc.kit_id = %s
                 """, conn, params=(k_item['id'],))
                 
                 costo_mezcla_kg = sum(df_comp_k['porcentaje_o_cantidad'] * df_comp_k['costo_promedio'])
@@ -735,18 +744,18 @@ else:
                     SELECT kc.componente_id, p.codigo_au, p.nombre_au, kc.porcentaje_o_cantidad, p.costo_promedio
                     FROM kit_componentes kc
                     JOIN productos p ON kc.componente_id = p.id
-                    WHERE kc.kit_id = ?
+                    WHERE kc.kit_id = %s
                 """, conn, params=(kit_sel,))
                 
                 costo_mezcla_total = 0.0
                 
                 for idx, row in df_comps.iterrows():
-                    necesario = row['porcentaje_o_cantidad'] * cant_solicitada
+                    necesario = float(row['porcentaje_o_cantidad']) * cant_solicitada
                     disponible_fisico = obtener_existencia_producto(row['componente_id'])
                     oc_pendientes = obtener_oc_pendientes(row['componente_id'])
                     disponible_neto = disponible_fisico + oc_pendientes
                     
-                    costo_comp = necesario * row['costo_promedio']
+                    costo_comp = necesario * float(row['costo_promedio']) if row['costo_promedio'] else 0.0
                     costo_mezcla_total += costo_comp
                     
                     if disponible_neto >= necesario:
