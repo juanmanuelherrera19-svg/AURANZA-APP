@@ -448,9 +448,9 @@ else:
     elif menu == "🛒 Pedidos de Venta":
         st.title("🛒 Módulo de Pedidos de Venta y Despachos")
         
-        tab_vta1, tab_vta2 = st.tabs(["➕ Montar Nuevo Pedido de Venta", "🚚 Control de Despachos y Facturación"])
+        sub_vta = st.radio("Acción a realizar:", ["➕ Montar Nuevo Pedido de Venta", "🚚 Control de Despachos y Facturación"], horizontal=True)
         
-        with tab_vta1:
+        if sub_vta == "➕ Montar Nuevo Pedido de Venta":
             st.subheader("Registrar Orden de Pedido Comercial")
             if rol not in ["Administrador", "Comercial"]:
                 st.warning("⚠️ Perfil sin autorización para montar pedidos de venta.")
@@ -490,7 +490,7 @@ else:
                                 except Exception as e:
                                     st.error(f"Error al registrar pedido: {e}")
 
-        with tab_vta2:
+        elif sub_vta == "🚚 Control de Despachos y Facturación":
             st.subheader("Despacho e Impacto en Inventario / Kardex")
             try:
                 df_pedidos = pd.read_sql_query("""
@@ -578,9 +578,9 @@ else:
     elif menu == "🧾 Órdenes de Compra y Recepción":
         st.title("🧾 Gestión de Compras y Recepciones")
         
-        tab1, tab2 = st.tabs(["Emitir Órden de Compra (OC)", "📦 Recepción de Mercancía en Bodega"])
-        
-        with tab1:
+        sub_oc = st.radio("Acción a realizar:", ["Emitir Órden de Compra (OC)", "📦 Recepción de Mercancía en Bodega"], horizontal=True)
+
+        if sub_oc == "Emitir Órden de Compra (OC)":
             st.subheader("Generar Nueva Orden de Compra")
             if rol not in ["Administrador"]:
                 st.warning("⚠️ Emisión de Compras restringida a perfil Administrador.")
@@ -616,7 +616,7 @@ else:
                         conn.commit()
                         st.success(f"✅ OC {num_oc} emitida correctamente.")
 
-        with tab2:
+        elif sub_oc == "📦 Recepción de Mercancía en Bodega":
             st.subheader("Entrada de Mercancía a Bodega (Recepción)")
             if rol not in ["Administrador", "Bodega"]:
                 st.warning("⚠️ Modulo de recepción reservado para perfiles Bodega o Administrador.")
