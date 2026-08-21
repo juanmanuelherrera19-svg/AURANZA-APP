@@ -23,6 +23,8 @@ def check_hashes(password, hashed_text):
         return hashed_text
     return False
 
+# OPTIMIZACIÓN: Conexión persistente mediante cache_resource
+@st.cache_resource
 def get_connection():
     conn = psycopg2.connect(
         host=st.secrets["postgres"]["host"],
@@ -191,7 +193,6 @@ def init_db():
         cursor.execute("INSERT INTO bodegas (nombre) VALUES (%s) ON CONFLICT (nombre) DO NOTHING", (b,))
 
     conn.commit()
-    conn.close()
 
 init_db()
 
@@ -203,7 +204,6 @@ def login_user(username, password):
     c = conn.cursor()
     c.execute('SELECT * FROM usuarios WHERE username = %s AND password = %s', (username, make_hashes(password)))
     data = c.fetchone()
-    conn.close()
     return data
 
 def update_password(username, new_password):
@@ -211,21 +211,24 @@ def update_password(username, new_password):
     c = conn.cursor()
     c.execute('UPDATE usuarios SET password = %s WHERE username = %s', (make_hashes(new_password), username))
     conn.commit()
-    conn.close()
+    st.cache_data.clear() # Limpia caché por seguridad
 
 def calcular_costo_promedio_movil(existencia_actual, costo_prom_actual, cant_nueva, costo_nuevo_cop):
     if existencia_actual <= 0:
         return costo_nuevo_cop
     return ((existencia_actual * costo_prom_actual) + (cant_nueva * costo_nuevo_cop)) / (existencia_actual + cant_nueva)
 
+# OPTIMIZACIÓN: Caché de lectura para existencia
+@st.cache_data(ttl=60)
 def obtener_existencia_producto(producto_id):
     conn = get_connection()
     c = conn.cursor()
     c.execute("SELECT SUM(cantidad_actual) as total FROM lotes WHERE producto_id = %s", (producto_id,))
     res = c.fetchone()['total']
-    conn.close()
     return float(res) if res else 0.0
 
+# OPTIMIZACIÓN: Caché de lectura para OC pendientes
+@st.cache_data(ttl=60)
 def obtener_oc_pendientes(producto_id):
     conn = get_connection()
     c = conn.cursor()
@@ -236,7 +239,6 @@ def obtener_oc_pendientes(producto_id):
         WHERE i.producto_id = %s AND oc.estado = 'ABIERTA'
     """, (producto_id,))
     res = c.fetchone()['oc_cant']
-    conn.close()
     return float(res) if res else 0.0
 
 def registrar_recepcion(producto_id, cantidad, lote_prov, fab_date, exp_date, costo_cop_base, moneda, trm, costo_ext, remision, obs, usuario, oc_id=None):
@@ -273,7 +275,7 @@ def registrar_recepcion(producto_id, cantidad, lote_prov, fab_date, exp_date, co
         c.execute("UPDATE ordenes_compra SET estado = 'RECIBIDA' WHERE id = %s", (oc_id,))
         
     conn.commit()
-    conn.close()
+    st.cache_data.clear() # Limpia caché para reflejar los datos actualizados
 
 def registrar_pedido_venta(num_ped, cliente, producto_id, cantidad, precio, vendedor, subtotal, monto_iva, total):
     conn = get_connection()
@@ -287,7 +289,7 @@ def registrar_pedido_venta(num_ped, cliente, producto_id, cantidad, precio, vend
     
     c.execute("UPDATE productos SET comp_venta = comp_venta + %s WHERE id = %s", (cantidad, producto_id))
     conn.commit()
-    conn.close()
+    st.cache_data.clear()
 
 def despachar_pedido_venta(pedido_id, usuario_despacha):
     conn = get_connection()
@@ -296,7 +298,6 @@ def despachar_pedido_venta(pedido_id, usuario_despacha):
     c.execute("SELECT * FROM pedidos_venta WHERE id = %s", (pedido_id,))
     ped = c.fetchone()
     if not ped or ped['estado'] != 'PENDIENTE':
-        conn.close()
         return False, "El pedido ya fue procesado o no existe."
     
     producto_id = ped['producto_id']
@@ -334,7 +335,7 @@ def despachar_pedido_venta(pedido_id, usuario_despacha):
     c.execute("UPDATE pedidos_venta SET estado = 'DESPACHADO' WHERE id = %s", (pedido_id,))
     
     conn.commit()
-    conn.close()
+    st.cache_data.clear()
     return True, "Despacho realizado con éxito."
 
 def generar_pdf_orden_compra(num_oc, proveedor, items_df):
@@ -357,7 +358,6 @@ def generar_pdf_orden_compra(num_oc, proveedor, items_df):
     story.append(Paragraph(f"<b>Fecha Emisión:</b> {datetime.now().strftime('%Y-%m-%d')}", styles['Normal']))
     story.append(Spacer(1, 15))
     
-    # ÚNICAMENTE DATOS DE PROVEEDOR
     data = [["Cód. Proveedor", "Descripción Proveedor", "Cant.", "Moneda", "P. Unitario", "Subtotal", "IVA", "Total"]]
     
     subtotal_gral = 0.0
@@ -404,6 +404,14 @@ def generar_pdf_orden_compra(num_oc, proveedor, items_df):
     doc.build(story)
     buffer.seek(0)
     return buffer
+
+# ==========================================
+# FUNCIONES AUXILIARES CON CACHÉ DE DATOS
+# ==========================================
+@st.cache_data(ttl=60)
+def cargar_tabla_sql(query):
+    conn = get_connection()
+    return pd.read_sql_query(query, conn)
 
 # ==========================================
 # CONTROL DE SESIÓN Y LOGIN
@@ -466,7 +474,7 @@ else:
     rol = st.session_state['rol']
 
     try:
-        df_p_pend = pd.read_sql_query("SELECT p.numero_pedido, p.cliente, pr.nombre_au, p.cantidad_solicitada, p.vendedor FROM pedidos_venta p JOIN productos pr ON p.producto_id = pr.id WHERE p.estado = 'PENDIENTE'", conn)
+        df_p_pend = cargar_tabla_sql("SELECT p.numero_pedido, p.cliente, pr.nombre_au, p.cantidad_solicitada, p.vendedor FROM pedidos_venta p JOIN productos pr ON p.producto_id = pr.id WHERE p.estado = 'PENDIENTE'")
         if not df_p_pend.empty:
             st.warning(f"🚨 **NOTIFICACIÓN GLOBAL:** Hay **{len(df_p_pend)} Pedido(s) de Venta PENDIENTE(S)** por despachar / facturar.")
             with st.expander("Ver lista de pedidos pendientes por despachar"):
@@ -480,7 +488,7 @@ else:
         
         query = "SELECT p.*, b.nombre as nombre_bodega FROM productos p JOIN bodegas b ON p.bodega_id = b.id"
         try:
-            df_prods = pd.read_sql_query(query, conn)
+            df_prods = cargar_tabla_sql(query)
         except Exception:
             df_prods = pd.DataFrame()
         
@@ -542,7 +550,7 @@ else:
             """, unsafe_allow_html=True)
             
             st.subheader("📦 Trazabilidad por Lotes Activos")
-            df_lotes = pd.read_sql_query("SELECT lote_proveedor, cantidad_actual, fecha_fabricacion, fecha_vencimiento, costo_unitario, remision_factura, observaciones FROM lotes WHERE producto_id = %s AND cantidad_actual > 0", conn, params=(prod_sel_id,))
+            df_lotes = cargar_tabla_sql(f"SELECT lote_proveedor, cantidad_actual, fecha_fabricacion, fecha_vencimiento, costo_unitario, remision_factura, observaciones FROM lotes WHERE producto_id = {prod_sel_id} AND cantidad_actual > 0")
             st.dataframe(df_lotes, use_container_width=True)
         else:
             st.warning("⚠️ No se encontraron productos registrados.")
@@ -558,7 +566,7 @@ else:
                 st.warning("⚠️ Perfil sin autorización para montar pedidos de venta.")
             else:
                 try:
-                    df_prods_vta = pd.read_sql_query("SELECT id, codigo_au, nombre_au, precio_venta, aplica_iva FROM productos", conn)
+                    df_prods_vta = cargar_tabla_sql("SELECT id, codigo_au, nombre_au, precio_venta, aplica_iva FROM productos")
                 except Exception:
                     df_prods_vta = pd.DataFrame()
                 
@@ -606,12 +614,12 @@ else:
         elif sub_vta == "🚚 Control de Despachos y Facturación":
             st.subheader("Despacho e Impacto en Inventario / Kardex", anchor=False)
             try:
-                df_pedidos = pd.read_sql_query("""
+                df_pedidos = cargar_tabla_sql("""
                     SELECT p.id, p.numero_pedido, p.cliente, pr.codigo_au, pr.nombre_au, p.cantidad_solicitada, p.precio_unitario, p.subtotal, p.monto_iva, p.precio_total, p.vendedor, p.fecha_pedido, p.estado
                     FROM pedidos_venta p
                     JOIN productos pr ON p.producto_id = pr.id
                     ORDER BY p.id DESC
-                """, conn)
+                """)
                 
                 if df_pedidos.empty:
                     st.info("No hay pedidos de venta registrados.")
@@ -668,7 +676,6 @@ else:
                 nv_min = c11.number_input("Nivel Mínimo:", min_value=0.0)
                 nv_max = c12.number_input("Nivel Máximo:", min_value=0.0)
                 
-                # IVA PREDETERMINADO EN SÍ
                 aplica_iva = c13.selectbox("Aplica IVA (19%):", ["SI", "NO"], index=0)
                 
                 btn_crear = st.form_submit_button("Guardar Producto")
@@ -680,13 +687,14 @@ else:
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """, (codigo_au, codigo_prov, nombre_au, nombre_prov, proveedor, categoria, linea, bodega_id, precio_vta, pt_pedido, nv_min, nv_max, aplica_iva))
                         conn.commit()
+                        st.cache_data.clear()
                         st.success(f"✅ Producto {codigo_au} - {nombre_au} creado exitosamente con IVA: {aplica_iva}")
                     except Exception as e:
                         st.error(f"Error al crear producto: {e}")
 
         st.subheader("Inventario Consolidado por Productos", anchor=False)
         try:
-            df_prods_all = pd.read_sql_query("SELECT p.codigo_au, p.codigo_proveedor, p.nombre_au, p.proveedor, b.nombre as bodega, p.costo_promedio, p.ultimo_costo, p.precio_venta, p.aplica_iva FROM productos p JOIN bodegas b ON p.bodega_id = b.id", conn)
+            df_prods_all = cargar_tabla_sql("SELECT p.codigo_au, p.codigo_proveedor, p.nombre_au, p.proveedor, b.nombre as bodega, p.costo_promedio, p.ultimo_costo, p.precio_venta, p.aplica_iva FROM productos p JOIN bodegas b ON p.bodega_id = b.id")
             st.dataframe(df_prods_all, use_container_width=True)
         except Exception:
             st.info("Aún no hay productos registrados.")
@@ -714,13 +722,14 @@ else:
                                 c = conn.cursor()
                                 c.execute("INSERT INTO proveedores (nombre, nit, contacto, telefono, email) VALUES (%s, %s, %s, %s, %s)", (nom_prov, nit_prov, contacto_prov, tel_prov, email_prov))
                                 conn.commit()
+                                st.cache_data.clear()
                                 st.success(f"✅ Proveedor {nom_prov} registrado correctamente.")
                             except Exception as e:
                                 st.error(f"Error al guardar proveedor: {e}")
 
         st.subheader("Listado de Proveedores Registrados", anchor=False)
         try:
-            df_provs = pd.read_sql_query("SELECT nombre, nit, contacto, telefono, email FROM proveedores", conn)
+            df_provs = cargar_tabla_sql("SELECT nombre, nit, contacto, telefono, email FROM proveedores")
             st.dataframe(df_provs, use_container_width=True)
         except Exception:
             st.info("Aún no hay proveedores registrados.")
@@ -736,7 +745,7 @@ else:
                 st.warning("⚠️ Emisión de Compras restringida a perfil Administrador.")
             else:
                 try:
-                    df_prods = pd.read_sql_query("SELECT id, codigo_au, codigo_proveedor, nombre_au, nombre_proveedor, proveedor, aplica_iva FROM productos", conn)
+                    df_prods = cargar_tabla_sql("SELECT id, codigo_au, codigo_proveedor, nombre_au, nombre_proveedor, proveedor, aplica_iva FROM productos")
                 except Exception:
                     df_prods = pd.DataFrame()
                 
@@ -779,6 +788,7 @@ else:
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """, (oc_id, prod_oc_id, cant_oc, costo_cop_base, moneda_oc, trm_oc, subtotal, monto_iva, costo_total))
                         conn.commit()
+                        st.cache_data.clear()
                         st.success(f"✅ OC {num_oc} emitida correctamente.")
                         
                         df_pdf_item = pd.DataFrame([{
@@ -800,12 +810,12 @@ else:
                 st.warning("⚠️ Modulo de recepción reservado para perfiles Bodega o Administrador.")
             else:
                 try:
-                    df_ocs = pd.read_sql_query("""
+                    df_ocs = cargar_tabla_sql("""
                         SELECT oc.id, oc.numero_oc, oc.proveedor, i.producto_id, i.cantidad_solicitada, i.costo_pactado, i.moneda, i.trm, i.subtotal, i.monto_iva, i.costo_total
                         FROM ordenes_compra oc 
                         JOIN ordenes_compra_items i ON oc.id = i.oc_id 
                         WHERE oc.estado = 'ABIERTA'
-                    """, conn)
+                    """)
                 except Exception:
                     df_ocs = pd.DataFrame()
                 
@@ -854,7 +864,7 @@ else:
         
         st.subheader("Fórmulas de Ensamble y Costo Teórico Actualizado", anchor=False)
         try:
-            df_prods = pd.read_sql_query("SELECT id, codigo_au, nombre_au, costo_promedio FROM productos", conn)
+            df_prods = cargar_tabla_sql("SELECT id, codigo_au, nombre_au, costo_promedio FROM productos")
         except Exception:
             df_prods = pd.DataFrame()
         
@@ -884,18 +894,19 @@ else:
                         c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (%s, %s, %s)", (kit_id, comp2, prop2))
                         c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (%s, %s, %s)", (kit_id, comp3, prop3))
                         conn.commit()
+                        st.cache_data.clear()
                         st.success("✅ Fórmula de Kit guardada.")
 
         st.subheader("Análisis de Costo y Margen Teórico por Kit", anchor=False)
         try:
-            df_kits_list = pd.read_sql_query("SELECT * FROM kits", conn)
+            df_kits_list = cargar_tabla_sql("SELECT * FROM kits")
             for idx, k_item in df_kits_list.iterrows():
-                df_comp_k = pd.read_sql_query("""
+                df_comp_k = cargar_tabla_sql(f"""
                     SELECT kc.porcentaje_o_cantidad, p.costo_promedio, p.nombre_au
                     FROM kit_componentes kc
                     JOIN productos p ON kc.componente_id = p.id
-                    WHERE kc.kit_id = %s
-                """, conn, params=(k_item['id'],))
+                    WHERE kc.kit_id = {k_item['id']}
+                """)
                 
                 costo_mezcla_kg = sum(df_comp_k['porcentaje_o_cantidad'] * df_comp_k['costo_promedio'])
                 st.info(f"🧪 **{k_item['codigo_kit']} - {k_item['nombre_kit']}** | Costo Promedio Móvil Mezcla: **${costo_mezcla_kg:,.2f} COP / KG**")
@@ -906,7 +917,7 @@ else:
         st.title("🚨 Motor MRP: Análisis de Materias Primas y Empaques", anchor=False)
         
         try:
-            df_kits = pd.read_sql_query("SELECT * FROM kits", conn)
+            df_kits = cargar_tabla_sql("SELECT * FROM kits")
         except Exception:
             df_kits = pd.DataFrame()
 
@@ -918,12 +929,12 @@ else:
             
             if st.button("🔍 Evaluar Disponibilidad y Generar Requerimientos"):
                 st.subheader("1. Evaluación de Materias Primas")
-                df_comps = pd.read_sql_query("""
+                df_comps = cargar_tabla_sql(f"""
                     SELECT kc.componente_id, p.codigo_au, p.nombre_au, kc.porcentaje_o_cantidad, p.costo_promedio
                     FROM kit_componentes kc
                     JOIN productos p ON kc.componente_id = p.id
-                    WHERE kc.kit_id = %s
-                """, conn, params=(kit_sel,))
+                    WHERE kc.kit_id = {kit_sel}
+                """)
                 
                 costo_mezcla_total = 0.0
                 
@@ -959,13 +970,13 @@ else:
     elif menu == "📜 Kardex e Historial":
         st.title("📜 Trazabilidad Completa / Kardex Auditable", anchor=False)
         try:
-            df_kardex = pd.read_sql_query("""
+            df_kardex = cargar_tabla_sql("""
                 SELECT k.fecha, p.codigo_au, p.nombre_au, b.nombre as bodega, k.tipo_movimiento, k.cantidad, k.costo_unitario, k.usuario, k.motivo, k.lote, k.documento_ref
                 FROM kardex k
                 LEFT JOIN productos p ON k.producto_id = p.id
                 LEFT JOIN bodegas b ON k.bodega_id = b.id
                 ORDER BY k.id DESC
-            """, conn)
+            """)
             if df_kardex.empty:
                 st.info("Aún no hay movimientos registrados en el Kardex.")
             else:
@@ -1013,5 +1024,3 @@ else:
                         st.success(f"✅ Contraseña de `{usr_to_reset}` actualizada correctamente.")
                     else:
                         st.error("La contraseña debe tener al menos 4 caracteres.")
-
-    conn.close()
