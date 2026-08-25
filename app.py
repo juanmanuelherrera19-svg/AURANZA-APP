@@ -8,10 +8,14 @@ import pandas as pd
 from datetime import datetime
 import hashlib
 import io
+from openpyxl.styles import Font, Alignment, PatternFill
+from openpyxl.utils import get_column_letter
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
+import database
+from database import get_connection, guardar_kit
 
 # ==========================================
 # CONFIGURACIÓN E INICIALIZACIÓN DE BD (SUPABASE)
@@ -26,23 +30,6 @@ def check_hashes(password, hashed_text):
         return hashed_text
     return False
 
-@st.cache_resource
-def get_connection():
-    try:
-        conn = psycopg2.connect(
-            host=st.secrets["postgres"]["host"],
-            port=st.secrets["postgres"]["port"],
-            database=st.secrets["postgres"]["dbname"],
-            user=st.secrets["postgres"]["user"],
-            password=st.secrets["postgres"]["password"],
-            cursor_factory=psycopg2.extras.DictCursor,
-            connect_timeout=10
-        )
-        return conn
-    except Exception as e:
-        st.error(f"❌ Error crítico de conexión a Supabase: {e}")
-        st.stop()
-
 def ejecutar_sql_seguro(query, params=None):
     """Ejecuta una sentencia SQL en una transacción aislada para evitar abortar el bloque completo."""
     conn = get_connection()
@@ -54,6 +41,7 @@ def ejecutar_sql_seguro(query, params=None):
         conn.rollback()
     finally:
         cursor.close()
+        conn.close()
 
 def init_db():
     ejecutar_sql_seguro("""
@@ -239,6 +227,7 @@ def login_user(username, password):
         return None
     finally:
         c.close()
+        conn.close()
 
 def update_password(username, new_password):
     conn = get_connection()
@@ -250,6 +239,7 @@ def update_password(username, new_password):
         conn.rollback()
     finally:
         c.close()
+        conn.close()
 
 def calcular_costo_promedio_movil(existencia_actual, costo_prom_actual, cant_nueva, costo_nuevo_cop):
     if existencia_actual <= 0:
@@ -269,6 +259,7 @@ def obtener_existencia_producto(producto_id):
         return 0.0
     finally:
         c.close()
+        conn.close()
 
 @st.cache_data(ttl=5)
 def obtener_oc_pendientes(producto_id):
@@ -291,6 +282,7 @@ def obtener_oc_pendientes(producto_id):
         return 0.0
     finally:
         c.close()
+        conn.close()
 
 def registrar_recepcion(producto_id, cantidad, lote_prov, fab_date, exp_date, costo_cop_base, moneda, trm, costo_ext, remision, obs, usuario, oc_id=None, item_id=None, estado_oc_final='RECIBIDA'):
     conn = get_connection()
@@ -338,6 +330,7 @@ def registrar_recepcion(producto_id, cantidad, lote_prov, fab_date, exp_date, co
         raise e
     finally:
         c.close()
+        conn.close()
     st.cache_data.clear()
 
 def registrar_pedido_venta(num_ped, cliente, kit_id, cantidad, precio, vendedor, subtotal, monto_iva, total):
@@ -355,6 +348,7 @@ def registrar_pedido_venta(num_ped, cliente, kit_id, cantidad, precio, vendedor,
         raise e
     finally:
         c.close()
+        conn.close()
     st.cache_data.clear()
 
 def despachar_pedido_venta(pedido_id, usuario_despacha):
@@ -374,6 +368,7 @@ def despachar_pedido_venta(pedido_id, usuario_despacha):
         return False, str(e)
     finally:
         c.close()
+        conn.close()
         st.cache_data.clear()
 
 def generar_pdf_orden_compra(num_oc, proveedor, items_df):
@@ -435,6 +430,8 @@ def cargar_tabla_sql(query, params=None):
     except Exception:
         conn.rollback()
         return pd.DataFrame()
+    finally:
+        conn.close()
 
 # ==========================================
 # CONTROL DE SESIÓN Y LOGIN
@@ -558,6 +555,7 @@ else:
                     conn.rollback()
                 finally:
                     c.close()
+                    conn.close()
 
                 comp_venta = float(p['comp_venta']) if p['comp_venta'] else 0.0
                 comp_op = float(p['comp_op']) if p['comp_op'] else 0.0
@@ -626,11 +624,14 @@ else:
                                 VALUES (%s, %s, %s, %s, %s)
                             """, (razon_social, identificacion, contacto, telefono, email))
                             conn.commit()
-                            c.close()
                             st.success(f"✅ Cliente '{razon_social}' registrado con éxito.")
                             st.rerun()
                         except Exception as e:
+                            conn.rollback()
                             st.error(f"Error al registrar cliente: {e}")
+                        finally:
+                            c.close()
+                            conn.close()
 
         st.subheader("Listado de Clientes Registrados")
         df_clientes = cargar_tabla_sql("SELECT razon_social, identificacion, contacto, telefono, email FROM clientes ORDER BY razon_social ASC")
@@ -788,11 +789,14 @@ else:
                                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """, (codigo_au, codigo_prov, nombre_au, nombre_prov, proveedor, categoria, linea, bodega_id, precio_vta, pt_pedido, nv_min, nv_max, aplica_iva))
                             conn.commit()
-                            c.close()
                             st.success(f"✅ Producto {codigo_au} - {nombre_au} creado exitosamente con IVA: {aplica_iva}")
                             st.rerun()
                         except Exception as e:
+                            conn.rollback()
                             st.error(f"Error al crear producto: {e}")
+                        finally:
+                            c.close()
+                            conn.close()
 
         st.subheader("Inventario Consolidado por Productos")
         df_prods_all = cargar_tabla_sql("SELECT p.codigo_au, p.codigo_proveedor, p.nombre_au, p.proveedor, b.nombre as bodega, p.costo_promedio, p.ultimo_costo, p.precio_venta, p.aplica_iva FROM productos p JOIN bodegas b ON p.bodega_id = b.id")
@@ -825,11 +829,14 @@ else:
                                 c = conn.cursor()
                                 c.execute("INSERT INTO proveedores (nombre, nit, contacto, telefono, email) VALUES (%s, %s, %s, %s, %s)", (nom_prov, nit_prov, contacto_prov, tel_prov, email_prov))
                                 conn.commit()
-                                c.close()
                                 st.success(f"✅ Proveedor {nom_prov} registrado correctamente.")
                                 st.rerun()
                             except Exception as e:
+                                conn.rollback()
                                 st.error(f"Error al guardar proveedor: {e}")
+                            finally:
+                                c.close()
+                                conn.close()
 
         st.subheader("Listado de Proveedores Registrados")
         df_provs = cargar_tabla_sql("SELECT nombre, nit, contacto, telefono, email FROM proveedores")
@@ -925,7 +932,6 @@ else:
                                     """, (oc_id, prod_oc_id, cant_oc, costo_cop_base, moneda_oc, trm_oc, subtotal, monto_iva, costo_total))
                                     
                                     conn.commit()
-                                    c.close()
                                     
                                     df_pdf_item = pd.DataFrame([{
                                         'codigo_proveedor': prod_info['codigo_proveedor'],
@@ -944,7 +950,11 @@ else:
                                     st.session_state["oc_key_version"] += 1
                                     st.rerun()
                                 except Exception as ex:
+                                    conn.rollback()
                                     st.error(f"❌ Error al guardar en base de datos: {ex}")
+                                finally:
+                                    c.close()
+                                    conn.close()
                     else:
                         st.info("💡 Por favor, seleccione un producto para ingresar las cantidades y costos.")
 
@@ -1126,10 +1136,13 @@ else:
         else:
             if rol == "Administrador":
                 with st.expander("➕ Crear / Configurar Fórmula de Kit", expanded=True):
-                    c_num = st.number_input("Código del Kit / Producto Final:", value="", placeholder="Ingrese los números (ej. 850001)")
-                    cod_kit = f"AU{c_num.strip()}"
+                    c_num = st.text_input(
+                        "Código del Kit / Producto Final:",
+                        placeholder="Ingrese los números (ej. 850001)"
+                    ).strip()
+                    cod_kit = f"AU{c_num}"
                     
-                    if c_num.strip():
+                    if c_num:
                         st.caption(f"Código resultante: **{cod_kit}**")
                         
                     nom_kit = st.text_input("Nombre Comercial Kit:")
@@ -1196,48 +1209,213 @@ else:
                     st.number_input("Rentabilidad (%):", value=rentabilidad_calc, disabled=True, format="%.2f")
 
                     if st.button("Guardar Fórmula Kit"):
-                        if not c_num.strip() or not nom_kit:
+                        total_kg = prop1 + prop2 + prop3
+                        
+                        df_kits_existentes = cargar_tabla_sql("SELECT codigo_kit FROM kits")
+                        codigos_existentes = df_kits_existentes['codigo_kit'].tolist() if not df_kits_existentes.empty else []
+        
+                        if not c_num or not nom_kit.strip():
                             st.error("❌ Indique el código y nombre del Kit.")
+                        elif not c_num.isdigit():
+                            st.error("❌ El código del Kit debe contener únicamente números.")
+                        elif cod_kit in codigos_existentes or c_num in codigos_existentes:
+                            st.error(f"❌ El código de Kit '{cod_kit}' ya existe. Utilice un número diferente.")
+                        elif precio_vta_kit <= 0:
+                            st.error("❌ El precio de venta es obligatorio y debe ser mayor a 0.")
                         elif abs(total_kg - 1.0) > 0.0001:
                             st.error(f"❌ La sumatoria de las cantidades de los componentes debe ser exactamente 1.00 KG. (Suma actual: {total_kg:.3f} KG)")
                         elif not any([comp1, comp2, comp3]):
                             st.error("❌ Seleccione al menos un componente para el kit.")
                         else:
-                            try:
-                                conn = get_connection()
-                                c = conn.cursor()
-                                c.execute("INSERT INTO kits (codigo_kit, nombre_kit, precio_venta) VALUES (%s, %s, %s) RETURNING id", (cod_kit, nom_kit, precio_vta_kit))
-                                kit_id = c.fetchone()['id']
-                                
-                                if comp1 and prop1 > 0:
-                                    c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (%s, %s, %s)", (kit_id, comp1, prop1))
-                                if comp2 and prop2 > 0:
-                                    c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (%s, %s, %s)", (kit_id, comp2, prop2))
-                                if comp3 and prop3 > 0:
-                                    c.execute("INSERT INTO kit_componentes (kit_id, componente_id, porcentaje_o_cantidad) VALUES (%s, %s, %s)", (kit_id, comp3, prop3))
-                                    
-                                conn.commit()
-                                c.close()
-                                st.success("✅ Fórmula de Kit guardada exitosamente.")
+                            componentes_a_guardar = [
+                                {'codigo': comp1, 'nombre': comp1, 'cantidad': prop1},
+                                {'codigo': comp2, 'nombre': comp2, 'cantidad': prop2},
+                                {'codigo': comp3, 'nombre': comp3, 'cantidad': prop3}
+                            ]
+                            exito, mensaje = database.guardar_kit(cod_kit, nom_kit, costo_kit_calc, precio_vta_kit, rentabilidad_calc, componentes_a_guardar)
+                            if exito:
+                                st.success(mensaje)
                                 st.rerun()
-                            except Exception as e:
-                                st.error(f"Error al guardar fórmula: {e}")
+                            else:
+                                st.error(mensaje)
 
-        st.subheader("Análisis de Costo y Margen Teórico por Kit")
-        df_kits_list = cargar_tabla_sql("SELECT * FROM kits")
-        if not df_kits_list.empty:
-            for idx, k_item in df_kits_list.iterrows():
-                df_comp_k = cargar_tabla_sql("""
-                    SELECT kc.porcentaje_o_cantidad, p.costo_promedio, p.nombre_au
+        st.markdown("---")
+        st.subheader("🔍 Buscador Integrado y Análisis de Costos por Kit")
+
+        query_resumen = """
+            SELECT 
+                k.id,
+                k.codigo_kit,
+                k.nombre_kit,
+                k.precio_venta,
+                COALESCE(SUM(kc.porcentaje_o_cantidad * COALESCE(p.costo_promedio, 0)), 0) AS costo_mezcla_kg
+            FROM kits k
+            LEFT JOIN kit_componentes kc ON k.id = kc.kit_id
+            LEFT JOIN productos p ON kc.componente_id = p.id
+            GROUP BY k.id, k.codigo_kit, k.nombre_kit, k.precio_venta
+            ORDER BY k.nombre_kit ASC
+        """
+        df_kits_resumen = cargar_tabla_sql(query_resumen)
+
+        if df_kits_resumen.empty:
+            st.info("Aún no hay kits creados en el sistema.")
+        else:
+            kit_seleccionado_id = st.selectbox(
+                "🔎 Busque un Kit por Código o Nombre para analizar sus componentes y costos:",
+                options=[None] + df_kits_resumen['id'].tolist(),
+                format_func=lambda x: "-- Seleccione un Kit --" if x is None else f"{df_kits_resumen[df_kits_resumen['id']==x]['codigo_kit'].values[0]} | {df_kits_resumen[df_kits_resumen['id']==x]['nombre_kit'].values[0]}"
+            )
+
+            if kit_seleccionado_id is not None:
+                k_item = df_kits_resumen[df_kits_resumen['id'] == kit_seleccionado_id].iloc[0]
+                costo_mezcla_kg = float(k_item['costo_mezcla_kg'])
+                precio_vta = float(k_item['precio_venta'])
+                margen_unitario = precio_vta - costo_mezcla_kg
+                porcentaje_margen = (margen_unitario / precio_vta * 100) if precio_vta > 0 else 0.0
+
+                st.markdown(f"""
+                <div style="background-color:#000080; color:#FFFFFF; padding:15px; border-radius:5px; font-family:sans-serif;">
+                    <h3 style="margin:0; color:#FFFFFF;">🧪 {k_item['codigo_kit']} - {k_item['nombre_kit']}</h3>
+                    <hr style="border-color:#444;">
+                    <p style="margin:5px 0;">💰 <b>Costo Promedio Móvil Mezcla:</b> ${costo_mezcla_kg:,.2f} COP / KG</p>
+                    <p style="margin:5px 0;">🏷️ <b>Precio de Venta Base:</b> ${precio_vta:,.2f} COP</p>
+                    <p style="margin:5px 0;">📈 <b>Margen Bruto Calculado:</b> ${margen_unitario:,.2f} COP ({porcentaje_margen:.2f}%)</p>
+                </div>
+                """, unsafe_allow_html=True)
+
+                st.markdown("#### 🧪 Desglose de Componentes")
+                df_detalles = cargar_tabla_sql("""
+                    SELECT 
+                        p.codigo_au AS "Código Componente",
+                        p.nombre_au AS "Nombre Componente",
+                        kc.porcentaje_o_cantidad AS "Cantidad (KG)",
+                        p.costo_promedio AS "Costo Prom. Unitario ($)",
+                        (kc.porcentaje_o_cantidad * p.costo_promedio) AS "Subtotal Costo ($)"
                     FROM kit_componentes kc
                     JOIN productos p ON kc.componente_id = p.id
                     WHERE kc.kit_id = %s
-                """, params=(k_item['id'],))
+                """, params=(kit_seleccionado_id,))
                 
-                costo_mezcla_kg = sum(df_comp_k['porcentaje_o_cantidad'] * df_comp_k['costo_promedio']) if not df_comp_k.empty else 0.0
-                st.info(f"🧪 **{k_item['codigo_kit']} - {k_item['nombre_kit']}** | Costo Promedio Móvil Mezcla: **${costo_mezcla_kg:,.2f} COP / KG** | Precio Venta: **${k_item['precio_venta']:,.2f} COP**")
-        else:
-            st.info("Aún no hay kits creados.")
+                st.dataframe(df_detalles, use_container_width=True)
+
+            st.markdown("---")
+            st.subheader("📊 Exportar Informe Consolidado de Kits")
+            
+            # 1. Cargar kits con sus 3 componentes y cantidades desglosadas en columnas C hasta H
+            query_export = """
+                SELECT 
+                    k.id,
+                    k.codigo_kit AS "Código Kit",
+                    k.nombre_kit AS "Nombre Kit",
+                    k.precio_venta AS "Precio Venta (COP)"
+                FROM kits k
+                ORDER BY k.nombre_kit ASC
+            """
+            df_export_base = cargar_tabla_sql(query_export)
+            
+            # Estructurar las columnas C hasta L exactas como la especificación visual
+            filas_export = []
+            for _, row_k in df_export_base.iterrows():
+                kit_id = row_k['id']
+                df_c = cargar_tabla_sql("""
+                    SELECT p.codigo_au, p.nombre_au, kc.porcentaje_o_cantidad, COALESCE(p.costo_promedio, 0) as costo_prom
+                    FROM kit_componentes kc
+                    JOIN productos p ON kc.componente_id = p.id
+                    WHERE kc.kit_id = %s
+                    ORDER BY kc.id ASC
+                """, params=(kit_id,))
+                
+                comp1_name, comp1_cant = "", 0.0
+                comp2_name, comp2_cant = "", 0.0
+                comp3_name, comp3_cant = "", 0.0
+                costo_mezcla = 0.0
+                
+                if len(df_c) > 0:
+                    comp1_name = f"{df_c.iloc[0]['codigo_au']} - {df_c.iloc[0]['nombre_au']}"
+                    comp1_cant = float(df_c.iloc[0]['porcentaje_o_cantidad'])
+                    costo_mezcla += comp1_cant * float(df_c.iloc[0]['costo_prom'])
+                if len(df_c) > 1:
+                    comp2_name = f"{df_c.iloc[1]['codigo_au']} - {df_c.iloc[1]['nombre_au']}"
+                    comp2_cant = float(df_c.iloc[1]['porcentaje_o_cantidad'])
+                    costo_mezcla += comp2_cant * float(df_c.iloc[1]['costo_prom'])
+                if len(df_c) > 2:
+                    comp3_name = f"{df_c.iloc[2]['codigo_au']} - {df_c.iloc[2]['nombre_au']}"
+                    comp3_cant = float(df_c.iloc[2]['porcentaje_o_cantidad'])
+                    costo_mezcla += comp3_cant * float(df_c.iloc[2]['costo_prom'])
+
+                precio_vta = float(row_k['Precio Venta (COP)'])
+                margen_unit = precio_vta - costo_mezcla
+                rentabilidad = (margen_unit / precio_vta) if precio_vta > 0 else 0.0
+
+                filas_export.append({
+                    "Código Kit": row_k['Código Kit'],
+                    "Nombre Kit": row_k['Nombre Kit'],
+                    "Componente 1": comp1_name,
+                    "Cantidad Componente 1": comp1_cant,
+                    "Componente 2": comp2_name,
+                    "Cantidad Componente 2": comp2_cant,
+                    "Componente 3": comp3_name,
+                    "Cantidad Componente 3": comp3_cant,
+                    "Costo Mezcla (COP/KG)": costo_mezcla,
+                    "Precio Venta (COP)": precio_vta,
+                    "Margen Unitario ($)": margen_unit,
+                    "Rentabilidad (%)": rentabilidad
+                })
+
+            df_export_final = pd.DataFrame(filas_export)
+
+            # 2. Generar Excel aplicando formato avanzado openpyxl
+            buffer_excel = io.BytesIO()
+            with pd.ExcelWriter(buffer_excel, engine='openpyxl') as writer:
+                df_export_final.to_excel(writer, index=False, sheet_name='Informe_Kits')
+                ws = writer.sheets['Informe_Kits']
+                
+                # Fila 1 en Negrilla
+                font_header = Font(bold=True, color="FFFFFF")
+                fill_header = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+                for col_idx in range(1, len(df_export_final.columns) + 1):
+                    cell = ws.cell(row=1, column=col_idx)
+                    cell.font = font_header
+                    cell.fill = fill_header
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                
+                # Aplicar Formato a celdas de datos
+                fmt_currency = '"$"#,##0.00'
+                fmt_percent = '0.00%'
+                
+                for row in range(2, len(df_export_final) + 2):
+                    # Columnas D, F, H (Cantidades) centradas
+                    ws[f'D{row}'].alignment = Alignment(horizontal="center")
+                    ws[f'F{row}'].alignment = Alignment(horizontal="center")
+                    ws[f'H{row}'].alignment = Alignment(horizontal="center")
+                    
+                    # Columnas I, J, K (Moneda $)
+                    ws[f'I{row}'].number_format = fmt_currency
+                    ws[f'J{row}'].number_format = fmt_currency
+                    ws[f'K{row}'].number_format = fmt_currency
+                    
+                    # Columna L (Rentabilidad %)
+                    ws[f'L{row}'].number_format = fmt_percent
+
+                # Sangría y ajuste automático del ancho de columna
+                for col in ws.columns:
+                    max_len = 0
+                    col_letter = get_column_letter(col[0].column)
+                    for cell in col:
+                        if cell.value is not None:
+                            val_str = str(cell.value)
+                            if len(val_str) > max_len:
+                                max_len = len(val_str)
+                    ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
+
+            buffer_excel.seek(0)
+
+            st.download_button(
+                label="📥 Descargar Informe Consolidado en Excel (.xlsx)",
+                data=buffer_excel,
+                file_name=f"Informe_Consolidado_Kits_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
     elif menu == "🚨 Requerimiento Comercial (MRP)":
         st.title("🚨 Motor MRP: Análisis de Materias Primas y Empaques")
@@ -1331,6 +1509,7 @@ else:
                 c_usr.execute("SELECT id, username, rol FROM usuarios")
                 users_list = c_usr.fetchall()
                 c_usr.close()
+                conn.close()
                 
                 df_users = pd.DataFrame(users_list, columns=['ID', 'Usuario', 'Rol'])
                 st.dataframe(df_users, use_container_width=True)
